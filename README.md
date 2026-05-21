@@ -1,80 +1,148 @@
-# 科研工作流
+# Daily Note v2
 
-这是一个每日科研记录与任务上下文系统。当前项目正在从 v1 桌面 app 过渡到 v2 轻量 workflow 工具包。
+这是一个面向科研工作的本地记录与上下文系统。当前重点不是做一个复杂 app，而是把每天的实验、加工、测量、判断、AI 建议和后续计划沉淀成可追溯的 Markdown 资产。
 
-- v1 桌面 app 已复制封存到 `legacy/v1_app/`，用于展示工作流建立过程。
-- `app/` 暂时保留并仍可运行，但视为过渡/legacy 代码；除非确有必要，后续不再把新能力加到旧 app 中。
-- v2 默认开发入口是 `workflow/`、`workspace/skills/` 和 `workspace/experiments/`。
-- `workspace/` 仍是长期事实来源，保存记录、实验代码、文献启发和报告草稿。
+核心目标：
 
-## 启动
+- 让自然语言记录成为主要交互方式。
+- 把事实记录、现场判断、AI 建议和待确认事项分开。
+- 把实验 session、图片证据、参数和后续测试计划组织到同一目录中。
+- 支持后续生成日总结、周总结和组会材料。
+- 优先沉淀轻量 workflow、项目 skill 和 session 约定，而不是继续扩展旧桌面 app。
 
-```powershell
-python run_daily_note.pyw
-```
+## 当前定位
 
-或双击 `run_daily_note.bat`。
+本仓库是 `daily_note_v2` 的工作区快照，当前主要包含：
 
-## 目录
+- 项目协作规则：`AGENTS.md`
+- 轻量 workflow 入口：`workflow/`
+- 项目内可复用 skills：`workspace/skills/`
+- 实验和微加工 session：`workspace/experiments/`
+- 配置示例：`config.local.example.json`
 
-```text
-workflow/               v2 轻量工具包入口，后续承载 listener、reports、measurement
-legacy/v1_app/          v1 桌面 app 归档展示目录，默认不再开发
-app/                    过渡保留的旧桌面 app，暂时仍可运行
-workspace/notes/         每日 Markdown 记录
-workspace/experiments/   实验采集、绘图、分析代码
-workspace/literature/    文献启发
-workspace/reports/       日总结、周报、组会材料
-workspace/indexes/       飞书索引和状态
-config.local.json        本机配置和密钥，不建议同步
-AGENTS.md                项目边界和 agent 规则
-```
+需要注意：当前仓库中的 `workflow/` 仍处于 v2 轻量工具包建设阶段，不应把它理解为完整稳定的自动化系统。现阶段更可靠的主线是：用自然语言记录现场过程，由 Codex 整理成结构化 session，并把关键图片保存为 session 资产。
 
-## 使用原则
-
-- 记录和实验产物以 `workspace/` 为核心，不绑定旧 app。
-- 新能力优先做成 v2 CLI/后台服务/skill，而不是继续扩展 Tk UI。
-- 旧 app 只作为临时查看器和 v1 展示材料，除非迁移需要，不主动读取 legacy 代码。
-- 测量和分析代码优先沉淀到 `workspace/experiments/` 的 session 目录。
-
-## Codex 协作
-
-需要把“高智慧规划”和“低成本执行”分开时，使用双线程流程：`gpt-5.5` 负责输出计划，`gpt-5.3-codex` 负责按计划执行。具体提示词和操作步骤见 `docs/codex-two-thread-workflow.md`。
-
-飞书用于外场快速输入和提问。常用命令：
+## 目录结构
 
 ```text
-记录：内容
-想法：内容
-杂事：内容
-新增待办任务：内容
-提问：问题
-关联待办：关键词 内容
+.
+|-- AGENTS.md
+|-- README.md
+|-- config.local.example.json
+|-- workflow/
+|   |-- README.md
+|   |-- __init__.py
+|   `-- __main__.py
+`-- workspace/
+    |-- experiments/
+    |   |-- README.md
+    |   `-- 2026-05-20/
+    |       `-- deep_si_etch_pku_changping/
+    |           |-- session.md
+    |           `-- images/
+    `-- skills/
+        |-- daily-summary/
+        `-- microfabrication-session/
 ```
 
-## 飞书 CLI listener
+## 记录原则
 
-启动或重启后台监听：
+日常记录遵循四类信息分离：
 
-```powershell
-.\scripts\start-feishu-cli-listener.ps1 -Restart
-```
+- 事实记录：实际发生的操作、参数、测量结果。
+- 现场判断：当时对原因、风险、趋势的判断。
+- AI 建议：AI 给出的解释、下一步建议或风险提醒。
+- 待确认事项：尚不确定、需要复查或后续测量的信息。
 
-安装当前用户登录后自动启动：
+当信息缺口会影响计算、归类、参数有效性或后续决策时，应在现场即时追问，而不是等到晚上总结时统一补。
 
-```powershell
-.\scripts\install-feishu-cli-listener-startup.ps1
-```
+## 微加工 session
 
-在飞书里发送：
+微加工、器件加工、ICP、深硅刻蚀、除胶、裂片等现场记录，遵循：
+
+[workspace/skills/microfabrication-session/SKILL.md](workspace/skills/microfabrication-session/SKILL.md)
+
+典型 session 结构：
 
 ```text
-系统状态
-当前 session
-最近 session
-切换 session：关键词
-恢复上一个 session
-我判断：内容
-问AI：问题
-结束当前 session
+workspace/experiments/YYYY-MM-DD/<process-name>/
+  session.md
+  images/
 ```
+
+`session.md` 应记录：
+
+- 基本信息和样品命名规则。
+- recipe、气压、功率、流量、温度、cycle 数。
+- 标定片和正式样品的区别。
+- 装载方式、压环、载片、固定介质和异常风险。
+- 加工过程中的阶段观察。
+- 后处理、除胶、裂片结果。
+- 后续测试计划与关注点。
+- 待确认事项。
+
+现场图片、显微图和加工后照片应保存到 session 的 `images/` 目录中，并在 `session.md` 中引用。图片不应只留在聊天附件、Lark 缓存或临时路径里，因为后续周总结和组会材料需要图文并茂。
+
+示例：
+
+[workspace/experiments/2026-05-20/deep_si_etch_pku_changping/session.md](workspace/experiments/2026-05-20/deep_si_etch_pku_changping/session.md)
+
+## 日总结与周总结
+
+日总结 skill 位于：
+
+[workspace/skills/daily-summary/SKILL.md](workspace/skills/daily-summary/SKILL.md)
+
+后续总结应优先读取：
+
+- `workspace/notes/`：每日自然语言原始记录。
+- `workspace/experiments/`：实验、测量和加工 session。
+- `workspace/skills/`：项目内总结和记录方法。
+
+周总结和组会材料应从 session 的 `images/` 中选图，而不是回聊天记录中查找图片。
+
+## 不提交的内容
+
+`.gitignore` 默认排除：
+
+- 本地密钥和机器配置：`config.local.json`
+- 运行索引和状态：`workspace/indexes/`
+- 每日原始 notes：`workspace/notes/`
+- 生成报告：`workspace/reports/daily/`
+- 临时聊天附件：`.codex-remote-attachments/`
+- 原始大数据和本地临时文件
+
+原则上，仓库中保存的是轻量、可复盘、可汇报的上下文资产；原始大数据只记录路径或编号，不默认同步进仓库。
+
+## 与 Codex 协作
+
+在这个项目里，Codex 的默认职责是：
+
+- 读取项目上下文和已有规则。
+- 帮助把自然语言记录整理成 Markdown session。
+- 对关键缺失信息即时追问。
+- 区分事实、判断、建议和待确认事项。
+- 保存重要图片到 session 目录。
+- 在生成正式记录前做短收口：确认关键照片、可测 chip/die 数量、下一步是测量还是继续加工。
+- 给出少量基于记录的下一步建议。
+
+如果是中等以上复杂度的功能开发，应先写清楚计划、修改范围、复用模块、测试方式和停止条件，再进入执行。
+
+## 当前状态
+
+当前仓库已经包含一个完整的深硅刻蚀加工 session 示例，展示了：
+
+- Bosch 深硅刻蚀参数记录。
+- SiO2 消耗速率标定。
+- Si 刻蚀速率估算。
+- 正式样品装载和硅油污染异常记录。
+- 230 cycle 后停止刻蚀的现场决策。
+- 除胶、裂片和 chip/die 命名体系。
+- 图片资产化保存。
+
+下一步更适合继续完善：
+
+- chip/die 级测试表。
+- 测腔性能记录模板。
+- 周总结图文生成流程。
+- `workflow/` 中稳定可用的 session 和 report CLI。
