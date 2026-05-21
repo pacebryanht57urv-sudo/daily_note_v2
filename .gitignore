@@ -1,0 +1,37 @@
+# Local secrets and machine-specific config
+/config.local.json
+/litellm-config.yaml
+/start-claude-deepseek.ps1
+
+# Legacy/local desktop app code, kept local but not synced to GitHub
+/app/
+/legacy/
+/run_daily_note.bat
+/run_daily_note.pyw
+/restart_daily_note.py
+
+# Python caches and bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Runtime indexes, logs, and generated local state
+/workspace/indexes/
+/workspace/notes/
+/workspace/users/*/indexes/
+/workspace/users/*/notes/
+/.codex-remote-attachments/
+/tmp/
+
+# Local scratch files and root-level reference PDFs
+/hello_world.py
+/*.pdf
+
+# Generated reports (daily summary docx, etc.)
+/workspace/reports/daily/
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+*.swp
+*.tmp

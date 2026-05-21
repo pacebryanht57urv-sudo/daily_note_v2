@@ -1,0 +1,17 @@
+{
+  "FEISHU_APP_ID": "cli_xxxxxxxxxxxxxxxx",
+  "FEISHU_APP_SECRET": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+  "OPENAI_API_KEY": "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+  "OPENAI_MODEL": "gpt-5.4",
+  "OPENAI_BASE_URL": "https://xfx.plus",
+  "CODEX_MODEL": "gpt-5.5",
+  "FEISHU_DAILY_SUMMARY_FOLDER_TOKEN": "fldxxxxxxxxxxxxxxxx",
+  "FEISHU_DAILY_SUMMARY_FOLDER_URL": "https://ecnrpn6ylnp0.feishu.cn/drive/folder/fldxxxxxxxxxxxxxxxx",
+  "FEISHU_WEEKLY_SUMMARY_FOLDER_TOKEN": "fldxxxxxxxxxxxxxxxx",
+  "FEISHU_WEEKLY_SUMMARY_FOLDER_URL": "https://ecnrpn6ylnp0.feishu.cn/drive/folder/fldxxxxxxxxxxxxxxxx",
+  "FEISHU_MONTHLY_SUMMARY_FOLDER_TOKEN": "fldxxxxxxxxxxxxxxxx",
+  "FEISHU_MONTHLY_SUMMARY_FOLDER_URL": "https://ecnrpn6ylnp0.feishu.cn/drive/folder/fldxxxxxxxxxxxxxxxx",
+  "WORKSPACE_DIR": "workspace",
+  "MACHINE_NAME": "lab-pc",
+  "ENABLE_FEISHU_LISTENER": true
+}
