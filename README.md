@@ -1,4 +1,4 @@
-# Daily Note v2
+# Daily Note
 
 这是一个面向科研工作的本地记录与上下文系统。当前重点不是做一个复杂 app，而是把每天的实验、加工、测量、判断、AI 建议和后续计划沉淀成可追溯的 Markdown 资产。
 
@@ -8,19 +8,18 @@
 - 把事实记录、现场判断、AI 建议和待确认事项分开。
 - 把实验 session、图片证据、参数和后续测试计划组织到同一目录中。
 - 支持后续生成日总结、周总结和组会材料。
-- 优先沉淀轻量 workflow、项目 skill 和 session 约定，而不是继续扩展旧桌面 app。
+- 优先沉淀目录约定、项目 skill 和 session 模板；工具只在确实减少心智负担时再生成。
 
 ## 当前定位
 
-本仓库是 `daily_note_v2` 的工作区快照，当前主要包含：
+本仓库是一个由自然语言记录驱动的科研工作目录。当前主要包含：
 
 - 项目协作规则：`AGENTS.md`
-- 轻量 workflow 入口：`workflow/`
 - 项目内可复用 skills：`workspace/skills/`
 - 实验和微加工 session：`workspace/experiments/`
 - 配置示例：`config.local.example.json`
 
-需要注意：当前仓库中的 `workflow/` 仍处于 v2 轻量工具包建设阶段，不应把它理解为完整稳定的自动化系统。现阶段更可靠的主线是：用自然语言记录现场过程，由 Codex 整理成结构化 session，并把关键图片保存为 session 资产。
+现阶段主线是：用自然语言记录现场过程，由 Codex 整理成结构化 session，并把关键图片保存为 session 资产。仓库不预设复杂 CLI 或后台服务；如果未来确实需要工具，应从已经稳定的记录习惯中抽象出来。
 
 ## 目录结构
 
@@ -29,10 +28,6 @@
 |-- AGENTS.md
 |-- README.md
 |-- config.local.example.json
-|-- workflow/
-|   |-- README.md
-|   |-- __init__.py
-|   `-- __main__.py
 `-- workspace/
     |-- experiments/
     |   |-- README.md
@@ -145,4 +140,4 @@ workspace/experiments/YYYY-MM-DD/<process-name>/
 - chip/die 级测试表。
 - 测腔性能记录模板。
 - 周总结图文生成流程。
-- `workflow/` 中稳定可用的 session 和 report CLI。
+- 只有在记录流程稳定后，再考虑把重复操作沉淀成小工具。
