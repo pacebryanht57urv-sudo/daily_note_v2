@@ -1,0 +1,4 @@
+interface:
+  display_name: "Measurement Session"
+  short_description: "Record and analyze lab measurement sessions safely."
+  default_prompt: "Use this skill for onsite lab measurement sessions: plan data groups, protect instrument configs, judge data validity, reuse acquisition scripts, and write concise session records."
