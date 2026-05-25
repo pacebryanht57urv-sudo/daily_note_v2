@@ -74,6 +74,7 @@ For each accepted group, write:
 
 - Time/context.
 - Sample or optical mode, if applicable.
+- Instrument platform overview and port mapping when relevant: device/system photos, physical input/output ports, software channels, signal meaning, and control direction.
 - Instrument config name and whether it was copied to a runtime config.
 - Controlled variables and scanned variables.
 - Readout channel and units.
