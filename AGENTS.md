@@ -49,6 +49,16 @@
 - 微加工/器件加工/ICP/深硅刻蚀/除胶/裂片等现场加工记录，应优先读取并遵循 `workspace/skills/microfabrication-session/SKILL.md`；该 skill 承载现场即时追问、图片资产化、session.md 短收口和后续测量建议规则。
 - 每日总结、周总结和组会材料从 `workspace/notes/`、`workspace/experiments/`、`workspace/literature/` 中读取，不从运行日志或索引中推断事实。
 
+## Git 协作防漏规则
+
+- 在任何实验、测量、加工、报告或规则修改开始前，Codex 应先提醒用户确认 `git status`、当前分支和远程同步状态；跨电脑或多人协作时，应优先从 `main` 执行 `git pull` 获取最新主线。
+- 完整 session、周总结/月总结、`AGENTS.md`、`README.md`、`workspace/skills/` 等较重要改动，默认建议从最新 `main` 新建分支，不直接在脏的 `main` 上推进；小错字、轻量链接修复等可直接在 `main` 上提交。
+- 新建分支命名应能看出用途，例如 `exp/YYYY-MM-DD-topic`、`report/YYYY-MM-weekN`、`rules/update-recording-guidance`。
+- 现场记录阶段若用户忘记 Git 流程，Codex 应优先提醒最小动作：开始前 `git switch main && git pull && git switch -c <branch>`；收口时 `git status`、`git add`、`git commit`、`git push -u origin <branch>` 并创建 PR。
+- PR 合并后，Codex 应提醒用户删除已合并的远程分支，并在本地执行 `git switch main`、`git pull`、`git branch -d <branch>` 清理本地临时分支。
+- 若一个未合并分支中的规则/skill 修改会被后续实验继续依赖，应优先拆出单独规则 PR；若暂时不能合并，后续相关实验可从该分支继续开分支，但必须明确这是堆叠分支，避免误以为 `main` 已包含这些修改。
+- 涉及 Git 协作、分支、PR、跨终端同步或提交前检查时，应优先读取并遵循 `workspace/skills/git-collaboration/SKILL.md`。
+
 ## AI 协作与执行策略
 
 - Codex 默认独立完成分析、实现、记录和总结；只有用户明确要求“交给 opencode”“生成给 opencode 的方案”或“多 agent 协作”时，才启用多 AI 协作流程。
