@@ -1,0 +1,4 @@
+interface:
+  display_name: "Auto Lock Red Pitaya Microcavity"
+  short_description: "Reuse the Red Pitaya and TOPTICA microcavity locking workflow."
+  default_prompt: "Continue the Red Pitaya + TOPTICA microcavity locking session using this skill."
