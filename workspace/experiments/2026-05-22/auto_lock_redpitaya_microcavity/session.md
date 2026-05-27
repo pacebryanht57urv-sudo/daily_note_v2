@@ -239,10 +239,9 @@ scripts/fast_lock_from_prelock.py
 | platform-drop 1/4 full width | ≈0.109714 V |
 | capture width | ≈0.042036 V |
 
-代表文件：
+代表图：
 
 ```text
-results/pyrpl_live_bridge/platform_drop_fullwidth_gt_0p1_20260526_225852_summary.json
 results/pyrpl_live_bridge/platform_drop_fullwidth_gt_0p1_20260526_225852_iter05_arc_width.png
 ```
 
@@ -258,10 +257,9 @@ dip-rise 1/4 锁点识别：
 | full width at dip-rise 1/4 level | ≈0.052176 V |
 | capture width | ≈0.013622 V |
 
-代表文件：
+代表图：
 
 ```text
-results/pyrpl_live_bridge/dip_rise_quarter_lockpoint_20260526_230329_summary.json
 results/pyrpl_live_bridge/dip_rise_quarter_lockpoint_20260526_230329_arc_width.png
 results/pyrpl_live_bridge/dip_rise_quarter_lockpoint_20260526_230329_lockpoint.png
 ```
@@ -300,13 +298,10 @@ results/pyrpl_live_bridge/dip_rise_quarter_lockpoint_20260526_230329_lockpoint.p
 | CH2 ptp | ≈0.005005 V |
 | `ival` drift | ≈-0.006348 V |
 
-代表文件：
+代表图：
 
 ```text
-results/pyrpl_live_bridge/dip_rise_quarter_lock_20260526_230355.csv
-results/pyrpl_live_bridge/dip_rise_quarter_lock_20260526_230355_summary.json
 results/pyrpl_live_bridge/dip_rise_quarter_lock_20260526_230355.png
-results/pyrpl_live_bridge/dip_rise_quarter_final_monitor_20260526_230523_summary.json
 ```
 
 ![dip-rise 1/4 锁模完整时间线](figures/dip_rise_quarter_lock_timeline.png)
@@ -427,12 +422,10 @@ seconds = 5
 interval = 0.1
 ```
 
-代表文件：
+代表图：
 
 ```text
-results/pyrpl_live_bridge/no_mode_baseline_20260527_20260527_202519.csv
 results/pyrpl_live_bridge/no_mode_baseline_20260527_20260527_202519.png
-results/pyrpl_live_bridge/no_mode_baseline_20260527_20260527_202519_summary.json
 ```
 
 ![no mode baseline 5s](results/pyrpl_live_bridge/no_mode_baseline_20260527_20260527_202519.png)
@@ -504,10 +497,9 @@ results/pyrpl_live_bridge/lockdepth_p1of5_initial_neg095_20260527_20260527_20353
 | `0.20-0.32 V` | 0.25 V | 25.0 | 0.22992 V | 是 | 0.00158 V | 0.00549 V |
 | `0.08-0.12 V` | 0.10 V | 45.5625 | 0.11620 V | 是 | 0.00204 V | 0.00623 V |
 
-代表文件：
+代表结果：
 
 ```text
-results/pyrpl_live_bridge/lowQ_current_width_20260527_20260527_204931_summary.json
 results/pyrpl_live_bridge/lowQ_wide_width_lock_20260527_20260527_204944/
 results/pyrpl_live_bridge/lowQ_old_width_lock_20260527_20260527_205016/
 ```
@@ -534,11 +526,10 @@ scripts/fast_lock_with_pretune.py
 --i 10
 ```
 
-代表文件：
+代表结果：
 
 ```text
 results/pyrpl_live_bridge/lowQ_repeat_lock_20260527_20260527_212857/
-results/pyrpl_live_bridge/lowQ_repeat_lock_20260527_20260527_212857/fast_pretune_lock_summary.json
 results/pyrpl_live_bridge/lowQ_repeat_lock_20260527_20260527_212857/final_prelock_downsweep_width_lock.png
 results/pyrpl_live_bridge/lowQ_repeat_lock_20260527_20260527_212857/handoff_monitor.png
 ```
@@ -612,7 +603,7 @@ scope.voltage_in2 ≈ 0.05151 V
 - 早期探索产生的大量 `.npz`。
 - 临时 `*_lockpoint.png`，尤其是已被 summary 图或精选图替代的旧图。
 - `live.log`、`live.err`、临时调试输出。
-- 非最终选中参数组的大量中间 CSV/PNG。
+- 非最终选中参数组的大量中间 CSV/JSON/PNG。
 - 仪器 GUI 自动保存配置、用户手动调试配置、缓存和运行产物。
 
 建议提交：
@@ -620,7 +611,7 @@ scope.voltage_in2 ≈ 0.05151 V
 - `session.md`。
 - 当前主线脚本和必要辅助脚本。
 - `workspace/skills/auto-lock-redpitaya-microcavity/SKILL.md`。
-- 代表性 summary JSON、CSV 和 PNG。
+- 被 `session.md` 明确引用的精选 PNG。
 - 被 `session.md` 明确引用的精选图。
 
 ## 当前欠缺与后续检查

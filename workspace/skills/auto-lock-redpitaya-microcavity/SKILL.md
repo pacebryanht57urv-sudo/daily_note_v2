@@ -194,4 +194,4 @@ Limit:
 Next check:
 ```
 
-Keep raw large data out of git. Reference result directories, summary JSON, CSV, and selected PNGs. Do not overstate 5 s short locks as long-term stability or measurement SNR proof.
+Keep raw large data and tabular run artifacts out of git by default. In GitHub-facing records, prefer `session.md`, code, selected PNGs, and result directory names over committing CSV/JSON outputs. Do not overstate 5 s short locks as long-term stability or measurement SNR proof.
