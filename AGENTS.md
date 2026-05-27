@@ -46,6 +46,8 @@
 - 测量采数与器件加工不同：每采完一组新数据后，Codex 应先和用户一起判断这组数据的规律、有效性、异常点和下一步意义；确认有效或明确标记为无效后，再及时写入 `session.md`，避免只堆数据不形成可追溯判断。
 - 使用 PyRPL、仪器上位机或其他会自动保存状态的实验控制软件扫参时，Codex 不得直接使用用户手动调试用的原始配置（如 `global_config`、`new1234`）写入参数；应先复制当前配置为 Codex 专用临时运行配置，脚本扫参只使用该副本，结束后关闭必要输出并删除临时配置，保留原始配置供用户后续手动调试。
 - 示波器/频谱仪/锁模/PID/Red Pitaya/PyRPL 等测量现场记录，应优先读取并遵循 `workspace/skills/measurement-session/SKILL.md`；该 skill 承载测量数据“一组一判读一记录”、采集脚本复用、仪器配置隔离和无效数据标记规则。
+- Red Pitaya/PyRPL + TOPTICA DLC PRO + 微腔透射自动锁模流程，应优先读取并遵循 `workspace/skills/auto-lock-redpitaya-microcavity/SKILL.md`；该 skill 承载当前锁模脚本、apparent linewidth 判据、PID handoff、饱和保护、monitor 判读和新线程复用入口。该 skill 与 `measurement-session`、`scientific-plotting` 并用：前者管锁模流程，后两者管测量记录和绘图质量。
+- 任何科研绘图、数据图、锁模过程图、报告图或组会图，应优先读取并遵循 `workspace/skills/scientific-plotting/SKILL.md`；该 skill 承载会议室投屏可读性、字体大小、图例/label 不遮挡数据和长参数放图外的规则。
 - 微加工/器件加工/ICP/深硅刻蚀/除胶/裂片等现场加工记录，应优先读取并遵循 `workspace/skills/microfabrication-session/SKILL.md`；该 skill 承载现场即时追问、图片资产化、session.md 短收口和后续测量建议规则。
 - 每日总结、周总结和组会材料从 `workspace/notes/`、`workspace/experiments/`、`workspace/literature/` 中读取，不从运行日志或索引中推断事实。
 

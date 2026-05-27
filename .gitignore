@@ -22,6 +22,11 @@ __pycache__/
 /workspace/users/*/notes/
 /.codex-remote-attachments/
 /tmp/
+*.npz
+*.log
+*.err
+/workspace/experiments/**/results/**/*.csv
+/workspace/experiments/**/results/**/*.json
 
 # Local scratch files and root-level reference PDFs
 /hello_world.py
