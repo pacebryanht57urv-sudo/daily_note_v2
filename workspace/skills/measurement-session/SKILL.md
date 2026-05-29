@@ -31,6 +31,18 @@ Before writing new code:
 
 If new code is unavoidable, name it by instrument/workflow rather than by one-off idea, and record why existing scripts were insufficient.
 
+## Shared Platform Sessions
+
+When another student or collaborator uses the same measurement platform, start a separate session for their data instead of appending to the current user's active experiment session. This is especially important when the same instruments and workflow are reused but the sample owner, device purpose, chip family, or analysis question differs.
+
+Default behavior:
+
+- Create or use a separate session directory under `workspace/experiments/<date>/`, named by the collaborator/project/sample, for example `liu_jianfei_platform_measurement`.
+- Put that collaborator's `session.md`, figures, results, and lightweight summaries under that separate session directory.
+- Reuse the stable acquisition, processing, plotting, saturation-check, and cleanup workflow from the current platform scripts when appropriate, but keep output paths and records in the collaborator's session.
+- Do not write collaborator measurements into the current chip7/four-inch-sample mainline session unless the user explicitly says the data belong to that session.
+- Record platform reuse explicitly: copied/reused scripts, instrument settings, channel mapping, power calibration, and any differences from the current mainline workflow.
+
 ## Fixed Large-Scan Fast Path
 
 When the user says a chip7 cavity is coupled, e.g. "c6 耦合好了", treat it as permission to run the current four-inch-sample large-scan pipeline. Do not rediscover the whole workspace, reread old cavity folders, or rewrite scripts.
