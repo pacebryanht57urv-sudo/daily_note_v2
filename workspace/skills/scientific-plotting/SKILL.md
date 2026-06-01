@@ -78,5 +78,5 @@ For scope traces, spectra, PID sweeps, and lock timelines:
 - Clearly state what each channel means, not only `CH1` or `CH2`.
 - Put key numeric settings outside the axes when they are long.
 - If showing lock stages, mark stages with readable color bands and a legend outside the data area.
-- When plotting an accepted data group for `session.md`, save both the raw data path and the representative figure path.
+- When plotting an accepted data group for external `session.md`, save both the raw data path and the representative figure path under `$DAILY_NOTE_DATA_ROOT` or a user-provided external output directory. Do not save generated figures into tracked repo paths.
 
