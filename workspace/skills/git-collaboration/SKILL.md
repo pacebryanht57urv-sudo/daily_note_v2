@@ -45,6 +45,23 @@ Do not assume a file count from a UI is wrong: Git may collapse an untracked dir
 
 For this repository, commit code/workflow only. Do not commit sessions, reports, notes, figures, raw large data, generated result CSV/JSON, caches, secrets, temporary indexes, or instrument autosave state.
 
+## Push Permission Gate
+
+Pushing to any remote branch is never automatic.
+
+After tracked files are modified, Codex may inspect, stage, and commit when the user has asked for that local work, but Codex must not run `git push`, create a remote branch, update an existing remote branch, or open/reopen a PR unless the user explicitly asks to push or create the PR in the current conversation.
+
+Before any push, Codex must state:
+
+- current branch;
+- destination remote and branch;
+- commits that will be uploaded;
+- whether the push will create a new remote branch or update an existing one.
+
+Then Codex must wait for an explicit confirmation such as "push", "推上去", "开 PR", or equivalent. A general request like "改一下规则", "先试试", "看看能不能", or "做这个修改" is not permission to push.
+
+If multiple people use this workflow, the same gate applies to everyone: local branches and commits stay local until the user deliberately asks to publish them.
+
 ## Finish Work Checklist
 
 When the user says a session/report/rule update is done:
@@ -53,10 +70,15 @@ When the user says a session/report/rule update is done:
 git status --short --branch
 git add <intended files>
 git commit -m "Short clear message"
+```
+
+Only after the user explicitly asks to publish:
+
+```bash
 git push -u origin <branch>
 ```
 
-Then create a PR on GitHub:
+Then create a PR on GitHub only when the user explicitly asks for a PR:
 
 ```text
 <working-branch> -> main

@@ -25,6 +25,7 @@ import numpy as np
 from scipy.ndimage import maximum_filter1d, minimum_filter1d
 from scipy.signal import savgol_filter
 
+from chip7_design import expected_chip7_fsr_mhz
 from data_paths import DATA_ROOT_ENV, default_cavity_dir
 
 
@@ -38,6 +39,7 @@ class ProcessConfig:
     mzi_d2_mhz: float
     mzi_d3_mhz: float
     disk_fsr_mhz: float
+    disk_fsr_source: str
     offset_mhz: float
     peak_sensitivity_db: float
     mzi_sensitivity_db: float
@@ -448,13 +450,18 @@ def parse_args(argv: Iterable[str]) -> argparse.Namespace:
     parser.add_argument("--mzi-d1-mhz", type=float, default=40.1228)
     parser.add_argument("--mzi-d2-mhz", type=float, default=4e-8)
     parser.add_argument("--mzi-d3-mhz", type=float, default=-3e-14)
-    parser.add_argument("--disk-fsr-mhz", type=float, default=204_900.0)
+    parser.add_argument(
+        "--disk-fsr-mhz",
+        type=float,
+        default=None,
+        help="Reference FSR for folded diagnostic plots. Defaults to chip/die design estimate.",
+    )
     parser.add_argument("--offset-mhz", type=float, default=0.0)
     parser.add_argument("--peak-sensitivity-db", type=float, default=0.0)
     parser.add_argument("--mzi-sensitivity-db", type=float, default=0.0)
     parser.add_argument("--nominal-width-samples", type=int, default=50)
-    parser.add_argument("--fsr-scan-min-mhz", type=float, default=50_000.0)
-    parser.add_argument("--fsr-scan-max-mhz", type=float, default=300_000.0)
+    parser.add_argument("--fsr-scan-min-mhz", type=float, default=None)
+    parser.add_argument("--fsr-scan-max-mhz", type=float, default=None)
     parser.add_argument("--fsr-scan-step-mhz", type=float, default=10.0)
     parser.add_argument(
         "--output-dir",
@@ -477,6 +484,17 @@ def main(argv: Iterable[str]) -> int:
     output_dir = Path(args.output_dir) if args.output_dir else data_path.parent
     output_dir.mkdir(parents=True, exist_ok=True)
     stem = data_path.stem
+    if args.disk_fsr_mhz is not None:
+        disk_fsr_mhz = float(args.disk_fsr_mhz)
+        disk_fsr_source = "cli"
+    elif args.chip.lower() == "chip7":
+        disk_fsr_mhz = expected_chip7_fsr_mhz(args.die)
+        disk_fsr_source = f"chip7_design_ng2_radius_for_{args.die}"
+    else:
+        raise SystemExit("Pass --disk-fsr-mhz for non-chip7 data; no safe default is available.")
+
+    fsr_scan_min_mhz = float(args.fsr_scan_min_mhz) if args.fsr_scan_min_mhz is not None else max(20_000.0, 0.20 * disk_fsr_mhz)
+    fsr_scan_max_mhz = float(args.fsr_scan_max_mhz) if args.fsr_scan_max_mhz is not None else 1.20 * disk_fsr_mhz
 
     config = ProcessConfig(
         data_path=str(data_path),
@@ -486,13 +504,14 @@ def main(argv: Iterable[str]) -> int:
         mzi_d1_mhz=args.mzi_d1_mhz,
         mzi_d2_mhz=args.mzi_d2_mhz,
         mzi_d3_mhz=args.mzi_d3_mhz,
-        disk_fsr_mhz=args.disk_fsr_mhz,
+        disk_fsr_mhz=disk_fsr_mhz,
+        disk_fsr_source=disk_fsr_source,
         offset_mhz=args.offset_mhz,
         peak_sensitivity_db=args.peak_sensitivity_db,
         mzi_sensitivity_db=args.mzi_sensitivity_db,
         nominal_width_samples=args.nominal_width_samples,
-        fsr_scan_min_mhz=args.fsr_scan_min_mhz,
-        fsr_scan_max_mhz=args.fsr_scan_max_mhz,
+        fsr_scan_min_mhz=fsr_scan_min_mhz,
+        fsr_scan_max_mhz=fsr_scan_max_mhz,
         fsr_scan_step_mhz=args.fsr_scan_step_mhz,
         output_dir=str(output_dir),
     )
@@ -519,8 +538,8 @@ def main(argv: Iterable[str]) -> int:
             d3=args.mzi_d3_mhz,
             offset_mhz=args.offset_mhz,
         )
-        mode_number = np.rint(rel_freq / args.disk_fsr_mhz).astype(int)
-        folded = rel_freq - mode_number * args.disk_fsr_mhz
+        mode_number = np.rint(rel_freq / disk_fsr_mhz).astype(int)
+        folded = rel_freq - mode_number * disk_fsr_mhz
         depth = 1.0 - dip_norm
         wavelength = args.center_nm + (args.stop_nm - args.start_nm) / 20.0 * time_s[dip_idx]
         for i, idx in enumerate(dip_idx):
@@ -541,8 +560,8 @@ def main(argv: Iterable[str]) -> int:
         fsr_candidates = find_fsr_candidates(
             rel_freq,
             depth,
-            min_mhz=args.fsr_scan_min_mhz,
-            max_mhz=args.fsr_scan_max_mhz,
+            min_mhz=fsr_scan_min_mhz,
+            max_mhz=fsr_scan_max_mhz,
             step_mhz=args.fsr_scan_step_mhz,
         )
     else:
@@ -559,7 +578,7 @@ def main(argv: Iterable[str]) -> int:
         mzi_raw=mzi_raw,
         dip_idx=dip_idx,
         rows=rows,
-        disk_fsr_mhz=args.disk_fsr_mhz,
+        disk_fsr_mhz=disk_fsr_mhz,
     )
     flattened_fig = plot_normalized_transmission(
         stem=stem,

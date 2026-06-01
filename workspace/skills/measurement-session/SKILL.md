@@ -25,6 +25,7 @@ Do not just accumulate files. Each accepted group needs a short judgment: what i
 Before writing new code:
 
 - Search existing session scripts with `rg --files` and `rg`.
+- When records/data live under ignored external or local experiment folders, use `rg -uuu` or explicit paths. Do not conclude that a design matrix or session record is missing from a normal `rg` search that obeys `.gitignore`.
 - Reuse or lightly patch existing acquisition/plotting scripts.
 - Keep instrument-level logic stable; express experiment differences through parameters, metadata, and output directories.
 - Prefer one stable scope acquisition script, one stable spectrum acquisition script, and parameterized sweep scripts.
@@ -47,6 +48,27 @@ Default behavior:
 
 When the user says a chip7 cavity is coupled, e.g. "c6 耦合好了", treat it as permission to run the current four-inch-sample large-scan pipeline. Do not rediscover the whole workspace, reread old cavity folders, or rewrite scripts.
 
+Use a fast onsite mode for consecutive cavities on the same die. Once the current die has been verified, cache its measurement context for the rest of that die:
+
+- current `chip / die`;
+- design radius and gap rows;
+- current monitor-power convention;
+- expected design-derived reference FSR;
+- active acquisition parameters.
+
+For the next cavity on the same die, do not reread this skill, `AGENTS.md`, git status, old sibling result folders, or the design matrix unless something changed. A one-line confirmation such as "using cached die2-3 context: R=65 um, monitor=10 uW" is enough.
+
+Escalate out of fast mode only when one of these is true:
+
+- the user starts a new die/chip, changes monitor power, scan range, trigger settings, or instrument channel mapping;
+- acquisition or restore fails;
+- CH2/CH3 saturation gate fails or is borderline;
+- the script reports an unknown die/design row or requires a manual reference FSR;
+- FSR candidates do not include a plausible full-FSR branch near the design expectation;
+- family count, depth-filtered point count, fit residual, or Q-fit success count changes unexpectedly compared with adjacent cavities on the same die;
+- the mode-family algorithm or plotting code was just edited;
+- the user explicitly asks whether a plot or family assignment "looks right".
+
 The script context is now in Git, while records and data are external:
 
 - Scripts: `workspace/scripts/microcavity_large_scan/`
@@ -56,6 +78,8 @@ The script context is now in Git, while records and data are external:
 
 For `chip7 / <current die> / cX`, use the fixed workflow below unless the user explicitly gives different scan settings. The current die is the die most recently stated by the user, for example `die1-1` or `die1-2`.
 
+Before acquisition/analysis for a new die, verify that die's design row from the external session/design matrix, including cavity radius and the three gap rows. Do not reuse the previous die's reference FSR or gap sequence. For chip7, the large-scan scripts derive their default reference FSR from the `chip7 / die` design helper; if the die is unknown or the design row cannot be verified, stop and ask before running dispersion or Q analysis.
+
 ```powershell
 cd <repo-root>
 
@@ -63,7 +87,7 @@ python workspace\scripts\microcavity_large_scan\acquire_large_scan.py --chip chi
 
 python workspace\scripts\microcavity_large_scan\process_large_scan.py "$env:DAILY_NOTE_DATA_ROOT\experiments\2026-05-28\four_inch_sample_formal_measurement\results\chip7\<current-die>\cX\large_scan_<timestamp>_1530-1570nm.npz" --chip chip7 --die <current-die> --cavity cX --nominal-width-samples 500
 
-python workspace\scripts\microcavity_large_scan\fit_large_scan_dispersion.py "$env:DAILY_NOTE_DATA_ROOT\experiments\2026-05-28\four_inch_sample_formal_measurement\results\chip7\<current-die>\cX\large_scan_<timestamp>_1530-1570nm_dip_table.csv" --chip chip7 --die <current-die> --cavity cX --depth-threshold 0.2 --reference-fsr-mhz 204900
+python workspace\scripts\microcavity_large_scan\fit_large_scan_dispersion.py "$env:DAILY_NOTE_DATA_ROOT\experiments\2026-05-28\four_inch_sample_formal_measurement\results\chip7\<current-die>\cX\large_scan_<timestamp>_1530-1570nm_dip_table.csv" --chip chip7 --die <current-die> --cavity cX --depth-threshold 0.2
 
 python workspace\scripts\microcavity_large_scan\fit_large_scan_q.py --data-path "$env:DAILY_NOTE_DATA_ROOT\experiments\2026-05-28\four_inch_sample_formal_measurement\results\chip7\<current-die>\cX\large_scan_<timestamp>_1530-1570nm.npz" --family-points-csv "$env:DAILY_NOTE_DATA_ROOT\experiments\2026-05-28\four_inch_sample_formal_measurement\results\chip7\<current-die>\cX\large_scan_<timestamp>_1530-1570nm_dispersion_auto_centered_family_points.csv" --chip chip7 --die <current-die> --cavity cX --depth-threshold 0.2
 ```
@@ -74,24 +98,30 @@ When the large scan is finished and the setup is returned to fine-scan mode, res
 
 Before processing or fitting, run a raw-voltage saturation check on the new acquisition only. Inspect CH2 transmission and CH3 MZI arrays from the new `.npz`/raw file; if either channel has an obvious flat top/bottom, or more than about `1%` of samples sit within a tiny tolerance of the channel min/max, stop immediately. Mark that data group invalid because of voltage saturation, report the saturated channel and fraction, and do not run family assignment or Q fitting unless the user explicitly asks to keep it as exploratory.
 
-Before or after fitting, inspect that cavity's figure folder only:
+Before or after fitting, identify the representative cavity photo from the die's known figure folder or the cavity's figure folder only:
 
 - `figures/measurement/chip7/<die>/<cavity>/`
+- `figures/measurement/chip7/<die>/cX.jpg`
 
-Read the microscope/coupling photos already placed there, typically `.jpg`, `.jpeg`, `.png`, or `.tif`. Do not search sibling cavity folders. Embed the representative cavity photo(s) in that cavity's `session.md` subsection together with the throughput / single-ended insertion-loss table. If no photo is present, record that the cavity photo is missing instead of silently skipping the preparation evidence.
+Do not search sibling cavity folders. Do not open or visually inspect microscope photos during fast mode unless the user asks or the file is missing/ambiguous; use the known path in the Markdown. If no photo is present, record that the cavity photo is missing instead of silently skipping the preparation evidence.
 
-After fitting, inspect only the new files for that cavity:
+After fitting in fast mode, extract record numbers from machine-readable outputs only:
 
 - `<stem>_process_summary.json`
 - `<stem>_dispersion_fit_summary.json`
 - `<stem>_large_scan_q_summary.json`
 - `<stem>_large_scan_q_by_family.csv`
+
+Do not open generated plots in fast mode just to write Markdown. The summary can be written from JSON/CSV values and figure paths. Keep plot files linked in the record for later review.
+
+Open or visually inspect generated plots only when an escalation trigger is present. If escalation is needed, inspect only the new files for that cavity:
+
 - `<stem>_ch2_ch3_raw.png`
 - `<stem>_dispersion_families_depth_gt_0p2.png`
 - `<stem>_large_scan_q_trends.png`
 - `<stem>_local_dip_mosaic.png`
 
-Then update the external `session.md` in that cavity subsection. Record:
+For Q large-scan measurements, update the external `session.md` and per-cavity summary immediately after the analysis is judged valid or explicitly invalid. Do not wait for an end-of-day收口 step unless the user explicitly says not to write yet. Record:
 
 - Acquisition facts: CH1 rising trigger at `1 V`, 20 s window, 500 kSa/s actual sample rate, `.npz` path.
 - Processing facts: total dips, `depth > 0.2` dips, FSR candidates near half-FSR and full FSR.
