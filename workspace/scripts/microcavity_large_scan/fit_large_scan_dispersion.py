@@ -27,6 +27,11 @@ DISPLAY_COLORS = {
     "mode4": "#9467bd",
 }
 FAMILY_KEYS = ("lower_branch", "upper_branch", "middle_branch")
+MIN_TRACK_SPACING_FRACTION = 0.65
+MAX_TRACK_SPACING_FRACTION = 1.35
+MAX_TRACK_MODE_SKIP = 3
+MIN_DEPTH_CLUSTER_GAP = 0.12
+MIN_DEPTH_CLUSTER_SIZE = 4
 
 
 @dataclass
@@ -80,7 +85,11 @@ def add_centered_coordinates(row: dict[str, float], reference_fsr_mhz: float, of
     return item
 
 
-def split_families(rows: list[dict[str, float]]) -> dict[str, list[dict[str, float]]]:
+def split_families(rows: list[dict[str, float]], reference_fsr_mhz: float) -> dict[str, list[dict[str, float]]]:
+    continuous = split_families_by_continuous_fsr(rows, reference_fsr_mhz)
+    if any(continuous.values()):
+        return continuous
+
     candidates = [row for row in rows if row["depth_1_minus_norm"] > 0.35]
     by_mode: dict[int, list[dict[str, float]]] = {}
     for row in candidates:
@@ -138,6 +147,126 @@ def split_families(rows: list[dict[str, float]]) -> dict[str, list[dict[str, flo
             remaining.remove(family)
 
     return {family: sorted(family_rows, key=lambda item: item["mode_number_ref"]) for family, family_rows in families.items()}
+
+
+def rows_are_connected_by_fsr(left: dict[str, float], right: dict[str, float], reference_fsr_mhz: float) -> bool:
+    spacing = abs(float(right["relative_freq_mhz"]) - float(left["relative_freq_mhz"]))
+    if spacing <= 0:
+        return False
+    mode_gap = int(round(spacing / reference_fsr_mhz))
+    if mode_gap < 1 or mode_gap > MAX_TRACK_MODE_SKIP:
+        return False
+    spacing_per_mode = spacing / mode_gap
+    return (
+        MIN_TRACK_SPACING_FRACTION * reference_fsr_mhz
+        <= spacing_per_mode
+        <= MAX_TRACK_SPACING_FRACTION * reference_fsr_mhz
+    )
+
+
+def connected_components_by_fsr(rows: list[dict[str, float]], reference_fsr_mhz: float) -> list[list[dict[str, float]]]:
+    if not rows:
+        return []
+    ordered = sorted(rows, key=lambda item: float(item["relative_freq_mhz"]))
+    n = len(ordered)
+    adjacency: list[set[int]] = [set() for _ in range(n)]
+    for i in range(n):
+        for j in range(i + 1, n):
+            spacing = float(ordered[j]["relative_freq_mhz"]) - float(ordered[i]["relative_freq_mhz"])
+            if spacing > MAX_TRACK_MODE_SKIP * MAX_TRACK_SPACING_FRACTION * reference_fsr_mhz:
+                break
+            if rows_are_connected_by_fsr(ordered[i], ordered[j], reference_fsr_mhz):
+                adjacency[i].add(j)
+                adjacency[j].add(i)
+
+    seen = [False] * n
+    components: list[list[dict[str, float]]] = []
+    for start in range(n):
+        if seen[start]:
+            continue
+        stack = [start]
+        seen[start] = True
+        component: list[dict[str, float]] = []
+        while stack:
+            node = stack.pop()
+            component.append(ordered[node])
+            for neighbor in adjacency[node]:
+                if not seen[neighbor]:
+                    seen[neighbor] = True
+                    stack.append(neighbor)
+        components.append(component)
+    return components
+
+
+def assign_sequence_modes(rows: list[dict[str, float]], reference_fsr_mhz: float) -> list[dict[str, float]]:
+    center = min(rows, key=lambda item: abs(float(item["relative_freq_mhz"])))
+    center_freq = float(center["relative_freq_mhz"])
+    assigned: list[dict[str, float]] = []
+    used_modes: dict[int, dict[str, float]] = {}
+    for row in rows:
+        mode = int(round((float(row["relative_freq_mhz"]) - center_freq) / reference_fsr_mhz))
+        item = dict(row)
+        item["mode_number_ref"] = mode
+        item["folded_freq_ref_mhz"] = float(row["relative_freq_mhz"]) - center_freq - mode * reference_fsr_mhz
+        item["_sequence_mode_assigned"] = 1.0
+        previous = used_modes.get(mode)
+        if previous is None or float(item["depth_1_minus_norm"]) > float(previous["depth_1_minus_norm"]):
+            used_modes[mode] = item
+    assigned = sorted(used_modes.values(), key=lambda item: int(item["mode_number_ref"]))
+    return assigned
+
+
+def split_families_by_continuous_fsr(rows: list[dict[str, float]], reference_fsr_mhz: float) -> dict[str, list[dict[str, float]]]:
+    families: dict[str, list[dict[str, float]]] = {key: [] for key in FAMILY_KEYS}
+    if len(rows) < 4:
+        return families
+
+    depth_bands = split_depth_bands(rows)
+    if len(depth_bands) >= 2:
+        for key, band in zip(FAMILY_KEYS, sorted(depth_bands, key=median_depth, reverse=True)):
+            families[key] = assign_sequence_modes(band, reference_fsr_mhz)
+        return families
+
+    components = connected_components_by_fsr(rows, reference_fsr_mhz)
+    usable = [component for component in components if len(component) >= 4]
+    if not usable:
+        return families
+
+    def component_sort_key(component: list[dict[str, float]]) -> tuple[float, int]:
+        depth = -float(np.nanmedian([row["depth_1_minus_norm"] for row in component]))
+        count = -len(component)
+        return depth, count
+
+    for key, component in zip(FAMILY_KEYS, sorted(usable, key=component_sort_key)):
+        families[key] = assign_sequence_modes(component, reference_fsr_mhz)
+    return families
+
+
+def median_depth(rows: list[dict[str, float]]) -> float:
+    return float(np.nanmedian([float(row["depth_1_minus_norm"]) for row in rows]))
+
+
+def split_depth_bands(rows: list[dict[str, float]]) -> list[list[dict[str, float]]]:
+    groups = [sorted(rows, key=lambda item: float(item["depth_1_minus_norm"]))]
+    while len(groups) < len(FAMILY_KEYS):
+        best: tuple[float, int, int] | None = None
+        for group_index, group in enumerate(groups):
+            if len(group) < 2 * MIN_DEPTH_CLUSTER_SIZE:
+                continue
+            depths = [float(row["depth_1_minus_norm"]) for row in group]
+            for split_index in range(MIN_DEPTH_CLUSTER_SIZE, len(group) - MIN_DEPTH_CLUSTER_SIZE + 1):
+                gap = depths[split_index] - depths[split_index - 1]
+                if gap < MIN_DEPTH_CLUSTER_GAP:
+                    continue
+                if best is None or gap > best[0]:
+                    best = (gap, group_index, split_index)
+        if best is None:
+            break
+        _gap, group_index, split_index = best
+        group = groups.pop(group_index)
+        groups.append(group[:split_index])
+        groups.append(group[split_index:])
+    return [group for group in groups if len(group) >= MIN_DEPTH_CLUSTER_SIZE]
 
 
 def display_labels_by_depth(families: dict[str, list[dict[str, float]]]) -> dict[str, str]:
@@ -292,6 +421,20 @@ def auto_center_family(
 ) -> tuple[list[dict[str, float]], dict[str, object]]:
     if len(seed_rows) < 4:
         return [], {"name": name, "status": "too_few_seed_points", "count": len(seed_rows)}
+
+    if all("_sequence_mode_assigned" in row for row in seed_rows):
+        selected = []
+        for row in seed_rows:
+            item = dict(row)
+            item["auto_offset_mhz"] = 0.0
+            item["mode_number_centered"] = int(row["mode_number_ref"])
+            item["folded_freq_centered_mhz"] = float(row["folded_freq_ref_mhz"])
+            selected.append(item)
+        fit = fit_family_centered(name, selected, reference_fsr_mhz)
+        fit["seed_count"] = len(seed_rows)
+        fit["auto_center_tolerance_mhz"] = tolerance_mhz
+        fit["auto_center_mode"] = "continuous_fsr_sequence"
+        return selected, fit
 
     seed_folded = np.array([row["folded_freq_ref_mhz"] for row in seed_rows], dtype=float)
     offset_mhz = -float(np.median(seed_folded))
@@ -573,7 +716,7 @@ def main(argv: Iterable[str]) -> int:
     )
 
     rows = load_dips(dip_table, args.depth_threshold, reference_fsr_mhz)
-    families = split_families(rows)
+    families = split_families(rows, reference_fsr_mhz)
     fits = [fit_family(name, family_rows, reference_fsr_mhz) for name, family_rows in families.items()]
     auto_families, auto_fits = auto_center_families(
         rows,

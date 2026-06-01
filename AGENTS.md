@@ -39,6 +39,11 @@
 - 现场采集、绘图、扫参等重复代码应优先复用已有脚本；实验差异通过参数、元数据和外部结果目录表达。
 - 脚本默认输出必须落到显式 `--output-dir` 或 `DAILY_NOTE_DATA_ROOT` 派生目录。不要根据脚本所在位置构造 repo 内 `results/`。
 
+## 编码与中文文件读取
+
+- 本仓库中文 Markdown 文件默认按 UTF-8 保存。Windows PowerShell 读取 `AGENTS.md`、`README.md`、`workspace/skills/**/*.md` 或外部 `session.md` 时，必须显式使用 `Get-Content -Encoding UTF8`，或使用 Python / 其他明确 UTF-8 的读取方式。
+- 看到 `绉戠爺`、`鑴氭湰` 等乱码时，先判断为终端解码问题，不要误判为文件内容损坏，也不要在乱码状态下直接编辑或补丁中文规则文件。
+
 ## Skill 使用
 
 - 示波器/频谱仪/锁模/PID/Red Pitaya/PyRPL 等测量现场记录，优先读取 `workspace/skills/measurement-session/SKILL.md`。
@@ -67,4 +72,3 @@
 - 读取、测试和修改必须服务于用户目标，不顺手重构或扩大无关范围。
 - 新能力优先沉淀为自然语言记录约定、session 模板或项目 skill；只有当重复操作稳定且确实减少心智负担时，才考虑生成小工具。
 - 遇到限流、模型服务错误、编码错误时，先停止并说明原因，不连续重试。
-

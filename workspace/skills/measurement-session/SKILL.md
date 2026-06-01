@@ -48,6 +48,27 @@ Default behavior:
 
 When the user says a chip7 cavity is coupled, e.g. "c6 耦合好了", treat it as permission to run the current four-inch-sample large-scan pipeline. Do not rediscover the whole workspace, reread old cavity folders, or rewrite scripts.
 
+Use a fast onsite mode for consecutive cavities on the same die. Once the current die has been verified, cache its measurement context for the rest of that die:
+
+- current `chip / die`;
+- design radius and gap rows;
+- current monitor-power convention;
+- expected design-derived reference FSR;
+- active acquisition parameters.
+
+For the next cavity on the same die, do not reread this skill, `AGENTS.md`, git status, old sibling result folders, or the design matrix unless something changed. A one-line confirmation such as "using cached die2-3 context: R=65 um, monitor=10 uW" is enough.
+
+Escalate out of fast mode only when one of these is true:
+
+- the user starts a new die/chip, changes monitor power, scan range, trigger settings, or instrument channel mapping;
+- acquisition or restore fails;
+- CH2/CH3 saturation gate fails or is borderline;
+- the script reports an unknown die/design row or requires a manual reference FSR;
+- FSR candidates do not include a plausible full-FSR branch near the design expectation;
+- family count, depth-filtered point count, fit residual, or Q-fit success count changes unexpectedly compared with adjacent cavities on the same die;
+- the mode-family algorithm or plotting code was just edited;
+- the user explicitly asks whether a plot or family assignment "looks right".
+
 The script context is now in Git, while records and data are external:
 
 - Scripts: `workspace/scripts/microcavity_large_scan/`
@@ -77,18 +98,24 @@ When the large scan is finished and the setup is returned to fine-scan mode, res
 
 Before processing or fitting, run a raw-voltage saturation check on the new acquisition only. Inspect CH2 transmission and CH3 MZI arrays from the new `.npz`/raw file; if either channel has an obvious flat top/bottom, or more than about `1%` of samples sit within a tiny tolerance of the channel min/max, stop immediately. Mark that data group invalid because of voltage saturation, report the saturated channel and fraction, and do not run family assignment or Q fitting unless the user explicitly asks to keep it as exploratory.
 
-Before or after fitting, inspect that cavity's figure folder only:
+Before or after fitting, identify the representative cavity photo from the die's known figure folder or the cavity's figure folder only:
 
 - `figures/measurement/chip7/<die>/<cavity>/`
+- `figures/measurement/chip7/<die>/cX.jpg`
 
-Read the microscope/coupling photos already placed there, typically `.jpg`, `.jpeg`, `.png`, or `.tif`. Do not search sibling cavity folders. Embed the representative cavity photo(s) in that cavity's `session.md` subsection together with the throughput / single-ended insertion-loss table. If no photo is present, record that the cavity photo is missing instead of silently skipping the preparation evidence.
+Do not search sibling cavity folders. Do not open or visually inspect microscope photos during fast mode unless the user asks or the file is missing/ambiguous; use the known path in the Markdown. If no photo is present, record that the cavity photo is missing instead of silently skipping the preparation evidence.
 
-After fitting, inspect only the new files for that cavity:
+After fitting in fast mode, extract record numbers from machine-readable outputs only:
 
 - `<stem>_process_summary.json`
 - `<stem>_dispersion_fit_summary.json`
 - `<stem>_large_scan_q_summary.json`
 - `<stem>_large_scan_q_by_family.csv`
+
+Do not open generated plots in fast mode just to write Markdown. The summary can be written from JSON/CSV values and figure paths. Keep plot files linked in the record for later review.
+
+Open or visually inspect generated plots only when an escalation trigger is present. If escalation is needed, inspect only the new files for that cavity:
+
 - `<stem>_ch2_ch3_raw.png`
 - `<stem>_dispersion_families_depth_gt_0p2.png`
 - `<stem>_large_scan_q_trends.png`
