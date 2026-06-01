@@ -17,26 +17,41 @@ __pycache__/
 
 # Runtime indexes, logs, and generated local state
 /workspace/indexes/
+/workspace/data/
+/workspace/experiments/
+/workspace/literature/
 /workspace/notes/
+/workspace/reports/
 /workspace/users/*/indexes/
 /workspace/users/*/notes/
 /.codex-remote-attachments/
 /tmp/
+
+# Code/workflow directories stay versioned
+!/workspace/scripts/
+!/workspace/scripts/**
+!/workspace/skills/
+!/workspace/skills/**
+/workspace/scripts/**/__pycache__/
+/workspace/scripts/**/*.pyc
+/workspace/scripts/**/*.pyo
+
+# Raw data and generated analysis artifacts
 *.npz
+*.mat
 *.log
 *.err
-/workspace/experiments/**/results/**/*.csv
-/workspace/experiments/**/results/**/*.json
+*.tmp
+*.bak
+*.csv
+/workspace/scripts/**/results/
+/workspace/scripts/**/outputs/
 
 # Local scratch files and root-level reference PDFs
 /hello_world.py
 /*.pdf
 
-# Generated reports (daily summary docx, etc.)
-/workspace/reports/daily/
-
 # OS/editor noise
 .DS_Store
 Thumbs.db
 *.swp
-*.tmp

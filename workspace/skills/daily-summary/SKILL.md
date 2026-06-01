@@ -11,7 +11,7 @@ Read the user's daily Markdown note file and generate a structured Chinese daily
 
 ### Input
 
-1. Find the note file at `workspace/notes/<YYYY>/<MM>/<YYYY-MM-DD>.md` for today (or the requested date).
+1. Find the note file at `$DAILY_NOTE_DATA_ROOT/notes/<YYYY>/<MM>/<YYYY-MM-DD>.md` for today (or the requested date). If the user explicitly gives another external notes path, use that.
 2. Read the full content of that Markdown file.
 
 ### Output Format

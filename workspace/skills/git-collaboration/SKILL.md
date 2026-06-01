@@ -43,7 +43,7 @@ Use `git status --short --branch` whenever the user asks "what next", "where am 
 
 Do not assume a file count from a UI is wrong: Git may collapse an untracked directory while commit panels count every file inside it.
 
-For complete sessions and reports, prefer small meaningful commits. Do not commit raw large data, caches, secrets, temporary indexes, or instrument autosave state.
+For this repository, commit code/workflow only. Do not commit sessions, reports, notes, figures, raw large data, generated result CSV/JSON, caches, secrets, temporary indexes, or instrument autosave state.
 
 ## Finish Work Checklist
 
@@ -64,9 +64,9 @@ Then create a PR on GitHub:
 
 Before merging, inspect `Files changed` and check:
 
-- Only intended session/report/rule files are included.
-- Images referenced by Markdown/HTML are present.
-- Raw large data, caches, secrets, and temporary files are absent.
+- Only intended code/workflow/rule files are included.
+- Session/report/note/image/data files are absent because they live under the external data root.
+- Raw large data, generated CSV/JSON, caches, secrets, and temporary files are absent.
 - `AGENTS.md` or skills were changed intentionally.
 
 ## After PR Merge

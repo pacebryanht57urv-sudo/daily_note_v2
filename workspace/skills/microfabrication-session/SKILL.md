@@ -25,12 +25,12 @@ description: Use when recording,整理, or生成微加工/器件加工/fab/deep 
 新建微加工 session 时，优先放在：
 
 ```text
-workspace/experiments/YYYY-MM-DD/<short_process_name>/
+$DAILY_NOTE_DATA_ROOT/experiments/YYYY-MM-DD/<short_process_name>/
   session.md
   images/
 ```
 
-图片、显微图、加工后照片应保存到 `images/` 下，不只保留聊天附件、Lark 缓存路径或临时文件路径。
+图片、显微图、加工后照片应保存到外部 session 的 `images/` 下，不只保留聊天附件、Lark 缓存路径或临时文件路径。外部 session 目录不进入 Git；Git 中只保存 workflow 和脚本。
 
 图片命名建议：
 

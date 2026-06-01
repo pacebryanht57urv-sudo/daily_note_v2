@@ -1,78 +1,70 @@
-# 科研记录新项目规则
+# 科研 workflow 仓库规则
 
 ## 核心定位
 
-本项目是科研记录与任务上下文系统。目标是用尽量自然的方式记录实验、测量、加工、分析和总结，让事实、判断、AI 建议与待确认事项可追溯、可复盘、可汇总。
+本仓库只保存代码和 workflow：采集/处理/分析脚本、Codex skills、协作规则、README 和配置示例。实验记录、图片、报告、notes、文献摘录、原始数据和生成结果不再作为 Git 资产；它们应放在群晖或本机外部数据根目录中。
 
-系统应尽量在使用中不可感：用户主要用自然语言描述正在发生的事情，Codex 负责读取上下文、判断归档位置、必要时追问，并维护 Markdown 记录。
+默认外部数据根由 `DAILY_NOTE_DATA_ROOT` 指定。脚本可以继续接受显式输入路径和 `--output-dir`；如果需要自动寻找默认数据目录但没有设置 `DAILY_NOTE_DATA_ROOT`，应给出清晰错误，不得默认写入本仓库。
 
 ## 最小目录边界
 
-- `workspace/experiments/`：实验、测量、微加工 session，保存 Markdown 记录、采集/处理脚本、精选图和轻量结果。
-- `workspace/notes/`：每日 Markdown 原始记录。
-- `workspace/reports/`：日总结、周总结、组会材料等生成结果。
-- `workspace/literature/`：文献启发和任务关联，不保存论文全文。
-- `workspace/skills/`：项目内可复用的记录、总结或分析 skill。
+- `workspace/scripts/`：可复用的采集、处理、绘图、拟合和仪器控制脚本。
+- `workspace/skills/`：项目内可复用的记录、总结、测量、绘图和 Git 协作 skill。
+- `AGENTS.md`、`README.md`：项目级规则和入口说明。
+- `config.local.example.json`：可提交的本地配置示例。
+- 外部数据根或群晖：`experiments/`、`notes/`、`reports/`、`literature/`、`data/` 等记录和数据目录。
 
-新项目默认不包含历史 `app/`、`legacy/`、飞书 listener、运行索引、旧报告、旧实验数据或原始大数据。若后续确需接入飞书或其他入口，应作为备用通道单独设计，不作为主线默认能力。
-
-## 工作场景分工
-
-- 办公室电脑是主机，负责主线功能开发、长期整理、日总结/周总结、报告生成和归档。
-- 实验室电脑是测量现场终端，负责样品测量、数据现场采集、采集/处理脚本、精选图和轻量结果。
-- 微加工现场负责记录样品状态、设备、recipe、关键参数、加工步骤、异常现象和现场判断。
-- 原始大数据只记录路径、样品编号或数据编号，不默认同步进仓库。
+`workspace/experiments/`、`workspace/reports/`、`workspace/notes/`、`workspace/literature/`、`workspace/data/` 在本仓库内默认忽略。它们可以在本机存在，作为迁移前缓存或群晖挂载点，但不得进入 Git。
 
 ## 科研级严谨协作原则
 
 - Codex 不能为了迎合用户而直接接受观点；应先检查假设、反例、风险和替代解释，再给出判断。
 - 功能开发必须优先判断是否减少用户心智负担；不能因为“可以实现”就增加命令、状态、后台服务或维护成本。
 - 日常记录必须区分事实记录、现场判断、AI 建议和待确认事项，不能把观察、推测和建议混写成同一类结论。
-- 当 Codex 无法确定一条记录应放入哪个 section 时，必须先向用户追问；不得擅自归类或为了流程顺滑而硬写。
-- 科研记录以凝练、可追溯、可复盘为目标；自然语言是主交互，Markdown 是真实状态。
+- 当 Codex 无法确定一条记录应放入哪个 section 时，必须先向用户追问；不得擅自归类。
+- 科研记录以凝练、可追溯、可复盘为目标；自然语言是主交互，外部 Markdown 记录是真实状态。
 
 ## 默认记录方式
 
-- 新建实验或加工时，优先在 `workspace/experiments/` 下建立 session 目录，并创建 `session.md`。
-- 每个 session 目录可按需包含：
-  - `session.md`：主记录。
-  - `figures/`：精选图。
-  - `scripts/`：采集、处理或绘图脚本。
-  - `results/`：轻量结果。
-- 实验、测量、加工记录应默认补齐“平台交代”：在哪里做、用什么设备/仪器、样品如何接入或装载、关键端口/部件如何对应，并尽量保存至少一张设备或装载状态照片。测量中重点记录信号链、物理端口、软件通道和控制方向；加工中重点记录设备名称、腔室/夹具/载片/压环/靶枪等关键部件与样品相对位置。
-- 非密集现场记录时，确认后的记录内容应尽量直接写入 Markdown。若上下文不足，Codex 应先问清楚是新 session、延续 session，还是写入已有记录。
-- 现场实验、测量、加工等密集自然语言输入阶段，Codex 默认先在对话中轻量归类和必要追问，不逐条实时写入 `session.md` 或复制图片；待用户明确说“整理一下 / 写进 session / 今天收口 / 落盘”，或一段内容明显结束后，再批量更新 `session.md` 和 `images/`。
-- 若信息会影响复现、安全、参数理解、数据解释或下一步决策，Codex 应即时追问；通常一次只问 1-2 个关键问题，避免打断现场记录流。
-- 测量采数与器件加工不同：每采完一组新数据后，Codex 应先和用户一起判断这组数据的规律、有效性、异常点和下一步意义；确认有效或明确标记为无效后，再及时写入 `session.md`，避免只堆数据不形成可追溯判断。
-- 使用 PyRPL、仪器上位机或其他会自动保存状态的实验控制软件扫参时，Codex 不得直接使用用户手动调试用的原始配置（如 `global_config`、`new1234`）写入参数；应先复制当前配置为 Codex 专用临时运行配置，脚本扫参只使用该副本，结束后关闭必要输出并删除临时配置，保留原始配置供用户后续手动调试。
-- 示波器/频谱仪/锁模/PID/Red Pitaya/PyRPL 等测量现场记录，应优先读取并遵循 `workspace/skills/measurement-session/SKILL.md`；该 skill 承载测量数据“一组一判读一记录”、采集脚本复用、仪器配置隔离和无效数据标记规则。
-- Red Pitaya/PyRPL + TOPTICA DLC PRO + 微腔透射自动锁模流程，应优先读取并遵循 `workspace/skills/auto-lock-redpitaya-microcavity/SKILL.md`；该 skill 承载当前锁模脚本、apparent linewidth 判据、PID handoff、饱和保护、monitor 判读和新线程复用入口。该 skill 与 `measurement-session`、`scientific-plotting` 并用：前者管锁模流程，后两者管测量记录和绘图质量。
-- 任何科研绘图、数据图、锁模过程图、报告图或组会图，应优先读取并遵循 `workspace/skills/scientific-plotting/SKILL.md`；该 skill 承载会议室投屏可读性、字体大小、图例/label 不遮挡数据和长参数放图外的规则。
-- 微加工/器件加工/ICP/深硅刻蚀/除胶/裂片等现场加工记录，应优先读取并遵循 `workspace/skills/microfabrication-session/SKILL.md`；该 skill 承载现场即时追问、图片资产化、session.md 短收口和后续测量建议规则。
-- 每日总结、周总结和组会材料从 `workspace/notes/`、`workspace/experiments/`、`workspace/literature/` 中读取，不从运行日志或索引中推断事实。
+- 新建实验、测量或加工 session 时，记录目录应建在 `DAILY_NOTE_DATA_ROOT` 下的外部 `experiments/YYYY-MM-DD/<session-name>/`，而不是 Git 仓库内。
+- 每个外部 session 可按需包含 `session.md`、`figures/`、`images/`、`results/` 和外部数据路径说明。
+- 密集现场记录阶段，Codex 默认先在对话中轻量归类和必要追问；待用户明确说“整理一下 / 写进 session / 今天收口 / 落盘”，或一段内容明显结束后，再批量更新外部 `session.md`。
+- 每采完一组新测量数据后，Codex 应先和用户一起判断规律、有效性、异常点和下一步意义；确认有效或明确标记无效后，再写入外部记录。
+- 原始大数据、运行产物、索引、密钥配置、仪器 autosave 状态不得提交到 Git。
+
+## 脚本与数据路径
+
+- 大扫测量脚本位于 `workspace/scripts/microcavity_large_scan/`。
+- Red Pitaya / PyRPL 微腔锁模脚本位于 `workspace/scripts/redpitaya_microcavity_lock/`。
+- 现场采集、绘图、扫参等重复代码应优先复用已有脚本；实验差异通过参数、元数据和外部结果目录表达。
+- 脚本默认输出必须落到显式 `--output-dir` 或 `DAILY_NOTE_DATA_ROOT` 派生目录。不要根据脚本所在位置构造 repo 内 `results/`。
+
+## Skill 使用
+
+- 示波器/频谱仪/锁模/PID/Red Pitaya/PyRPL 等测量现场记录，优先读取 `workspace/skills/measurement-session/SKILL.md`。
+- Red Pitaya/PyRPL + TOPTICA DLC PRO + 微腔透射自动锁模流程，优先读取 `workspace/skills/auto-lock-redpitaya-microcavity/SKILL.md`。
+- 科研绘图、数据图、锁模过程图、报告图或组会图，优先读取 `workspace/skills/scientific-plotting/SKILL.md`。
+- 微加工/器件加工/ICP/深硅刻蚀/除胶/裂片等现场加工记录，优先读取 `workspace/skills/microfabrication-session/SKILL.md`。
+- 每日总结、周总结和组会材料从外部 notes、experiments、literature 和 reports 中读取，不从运行日志或索引中推断事实。
 
 ## Git 协作防漏规则
 
-- 在任何实验、测量、加工、报告或规则修改开始前，Codex 应先提醒用户确认 `git status`、当前分支和远程同步状态；跨电脑或多人协作时，应优先从 `main` 执行 `git pull` 获取最新主线。
-- 完整 session、周总结/月总结、`AGENTS.md`、`README.md`、`workspace/skills/` 等较重要改动，默认建议从最新 `main` 新建分支，不直接在脏的 `main` 上推进；小错字、轻量链接修复等可直接在 `main` 上提交。
-- 新建分支命名应能看出用途，例如 `exp/YYYY-MM-DD-topic`、`report/YYYY-MM-weekN`、`rules/update-recording-guidance`。
-- 现场记录阶段若用户忘记 Git 流程，Codex 应优先提醒最小动作：开始前 `git switch main && git pull && git switch -c <branch>`；收口时 `git status`、`git add`、`git commit`、`git push -u origin <branch>` 并创建 PR。
-- PR 合并后，Codex 应提醒用户删除已合并的远程分支，并在本地执行 `git switch main`、`git pull`、`git branch -d <branch>` 清理本地临时分支。
-- 若一个未合并分支中的规则/skill 修改会被后续实验继续依赖，应优先拆出单独规则 PR；若暂时不能合并，后续相关实验可从该分支继续开分支，但必须明确这是堆叠分支，避免误以为 `main` 已包含这些修改。
-- 涉及 Git 协作、分支、PR、跨终端同步或提交前检查时，应优先读取并遵循 `workspace/skills/git-collaboration/SKILL.md`。
+- 在任何实验、测量、加工、报告或规则修改开始前，Codex 应先确认 `git status`、当前分支和远程同步状态。
+- 完整 workflow、`AGENTS.md`、`README.md`、`workspace/skills/` 或脚本重构等重要改动，默认从最新 `main` 新建分支；现场连续分支应明确是否为堆叠分支。
+- 涉及 Git 协作、分支、PR、跨终端同步或提交前检查时，优先读取 `workspace/skills/git-collaboration/SKILL.md`。
+- 提交前必须确认 staged 内容只包含代码、workflow、skills、规则和配置示例；不得包含 session、图片、报告、`.npz`、`.mat`、结果 `.csv` 或结果 `.json`。
+- PR 合并后，提醒用户删除已合并远程分支，并在本地 `git switch main`、`git pull`、`git branch -d <branch>` 清理。
 
 ## AI 协作与执行策略
 
 - Codex 默认独立完成分析、实现、记录和总结；只有用户明确要求“交给 opencode”“生成给 opencode 的方案”或“多 agent 协作”时，才启用多 AI 协作流程。
-- 需要交给 opencode 时，Codex 输出短计划，必须包含：`Goal`、`Scope`、`Reuse`、`Steps`、`Checks`、`Stop`。
-- 短计划只写本次任务差异，不重复本文件长期规则；执行完成后默认停在 execute 风格汇报，不自动 review、不扩大范围。
+- 需要交给 opencode 时，Codex 输出短计划，必须包含 `Goal`、`Scope`、`Reuse`、`Steps`、`Checks`、`Stop`。
 - 关键主线功能、高风险重构、安全相关改动，或用户明确要求 review 时，Codex 应做审查。
 
 ## 执行安全与边界
 
-- 严谨性优先于节省 token；必要的上下文读取、核查、测试和追问不应因为成本顾虑而省略。
-- 不把严谨性等同于无范围扩展；读取、测试和修改必须服务于用户目标，不顺手重构或扩大无关范围。
-- 新能力优先沉淀为自然语言记录约定、session 模板或项目 skill；只有当重复操作已经稳定且确实减少心智负担时，才考虑生成小工具。
-- 现场采集、绘图、扫参等重复代码应优先复用或小幅修改已有脚本；新增代码前先搜索相近脚本。仪器级通用采集/绘图逻辑应固定下来，实验差异通过参数、元数据和结果目录表达，不为相似任务反复新建脚本。
+- 严谨性优先于节省 token；必要的上下文读取、核查、测试和追问不应省略。
+- 读取、测试和修改必须服务于用户目标，不顺手重构或扩大无关范围。
+- 新能力优先沉淀为自然语言记录约定、session 模板或项目 skill；只有当重复操作稳定且确实减少心智负担时，才考虑生成小工具。
 - 遇到限流、模型服务错误、编码错误时，先停止并说明原因，不连续重试。
-- 运行产物、用户数据、索引、密钥配置、原始大数据不得提交到 git。
+
