@@ -18,6 +18,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from scipy.optimize import curve_fit
 
+from chip7_design import expected_chip7_fsr_mhz
 from data_paths import DATA_ROOT_ENV, default_cavity_dir
 DISPLAY_COLORS = {
     "mode1": "#1f77b4",
@@ -33,6 +34,7 @@ class FitConfig:
     dip_table: str
     depth_threshold: float
     reference_fsr_mhz: float
+    reference_fsr_source: str
     auto_center_tolerance_mhz: float
     auto_center_iterations: int
     output_dir: str
@@ -523,7 +525,12 @@ def parse_args(argv: Iterable[str]) -> argparse.Namespace:
     parser.add_argument("--die", default="die1-1")
     parser.add_argument("--cavity", default="c1")
     parser.add_argument("--depth-threshold", type=float, default=0.2)
-    parser.add_argument("--reference-fsr-mhz", type=float, default=204_900.0)
+    parser.add_argument(
+        "--reference-fsr-mhz",
+        type=float,
+        default=None,
+        help="Reference FSR for family assignment. Defaults to chip/die design estimate.",
+    )
     parser.add_argument("--auto-center-tolerance-mhz", type=float, default=8_000.0)
     parser.add_argument("--auto-center-iterations", type=int, default=3)
     parser.add_argument(
@@ -547,22 +554,31 @@ def main(argv: Iterable[str]) -> int:
     output_dir = Path(args.output_dir) if args.output_dir else dip_table.parent
     output_dir.mkdir(parents=True, exist_ok=True)
     stem = dip_table.name.replace("_dip_table.csv", "")
+    if args.reference_fsr_mhz is not None:
+        reference_fsr_mhz = float(args.reference_fsr_mhz)
+        reference_fsr_source = "cli"
+    elif args.chip.lower() == "chip7":
+        reference_fsr_mhz = expected_chip7_fsr_mhz(args.die)
+        reference_fsr_source = f"chip7_design_ng2_radius_for_{args.die}"
+    else:
+        raise SystemExit("Pass --reference-fsr-mhz for non-chip7 data; no safe default is available.")
     config = FitConfig(
         dip_table=str(dip_table),
         depth_threshold=args.depth_threshold,
-        reference_fsr_mhz=args.reference_fsr_mhz,
+        reference_fsr_mhz=reference_fsr_mhz,
+        reference_fsr_source=reference_fsr_source,
         auto_center_tolerance_mhz=args.auto_center_tolerance_mhz,
         auto_center_iterations=args.auto_center_iterations,
         output_dir=str(output_dir),
     )
 
-    rows = load_dips(dip_table, args.depth_threshold, args.reference_fsr_mhz)
+    rows = load_dips(dip_table, args.depth_threshold, reference_fsr_mhz)
     families = split_families(rows)
-    fits = [fit_family(name, family_rows, args.reference_fsr_mhz) for name, family_rows in families.items()]
+    fits = [fit_family(name, family_rows, reference_fsr_mhz) for name, family_rows in families.items()]
     auto_families, auto_fits = auto_center_families(
         rows,
         families,
-        reference_fsr_mhz=args.reference_fsr_mhz,
+        reference_fsr_mhz=reference_fsr_mhz,
         tolerance_mhz=args.auto_center_tolerance_mhz,
         iterations=args.auto_center_iterations,
     )
@@ -574,7 +590,7 @@ def main(argv: Iterable[str]) -> int:
     fit_plot_path = output_dir / f"{stem}_dispersion_families_depth_gt_{args.depth_threshold:g}.png".replace(".", "p")
     # Keep the extension readable after decimal replacement.
     fit_plot_path = fit_plot_path.with_name(fit_plot_path.name.replace("ppng", ".png"))
-    plot_fits(fit_plot_path, rows, families, fits, args.reference_fsr_mhz)
+    plot_fits(fit_plot_path, rows, families, fits, reference_fsr_mhz)
     auto_fit_plot_path = output_dir / f"{stem}_dispersion_auto_centered_depth_gt_{args.depth_threshold:g}.png".replace(".", "p")
     auto_fit_plot_path = auto_fit_plot_path.with_name(auto_fit_plot_path.name.replace("ppng", ".png"))
     plot_auto_centered_fits(auto_fit_plot_path, auto_families, auto_fits)

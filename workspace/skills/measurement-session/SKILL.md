@@ -25,6 +25,7 @@ Do not just accumulate files. Each accepted group needs a short judgment: what i
 Before writing new code:
 
 - Search existing session scripts with `rg --files` and `rg`.
+- When records/data live under ignored external or local experiment folders, use `rg -uuu` or explicit paths. Do not conclude that a design matrix or session record is missing from a normal `rg` search that obeys `.gitignore`.
 - Reuse or lightly patch existing acquisition/plotting scripts.
 - Keep instrument-level logic stable; express experiment differences through parameters, metadata, and output directories.
 - Prefer one stable scope acquisition script, one stable spectrum acquisition script, and parameterized sweep scripts.
@@ -56,6 +57,8 @@ The script context is now in Git, while records and data are external:
 
 For `chip7 / <current die> / cX`, use the fixed workflow below unless the user explicitly gives different scan settings. The current die is the die most recently stated by the user, for example `die1-1` or `die1-2`.
 
+Before acquisition/analysis for a new die, verify that die's design row from the external session/design matrix, including cavity radius and the three gap rows. Do not reuse the previous die's reference FSR or gap sequence. For chip7, the large-scan scripts derive their default reference FSR from the `chip7 / die` design helper; if the die is unknown or the design row cannot be verified, stop and ask before running dispersion or Q analysis.
+
 ```powershell
 cd <repo-root>
 
@@ -63,7 +66,7 @@ python workspace\scripts\microcavity_large_scan\acquire_large_scan.py --chip chi
 
 python workspace\scripts\microcavity_large_scan\process_large_scan.py "$env:DAILY_NOTE_DATA_ROOT\experiments\2026-05-28\four_inch_sample_formal_measurement\results\chip7\<current-die>\cX\large_scan_<timestamp>_1530-1570nm.npz" --chip chip7 --die <current-die> --cavity cX --nominal-width-samples 500
 
-python workspace\scripts\microcavity_large_scan\fit_large_scan_dispersion.py "$env:DAILY_NOTE_DATA_ROOT\experiments\2026-05-28\four_inch_sample_formal_measurement\results\chip7\<current-die>\cX\large_scan_<timestamp>_1530-1570nm_dip_table.csv" --chip chip7 --die <current-die> --cavity cX --depth-threshold 0.2 --reference-fsr-mhz 204900
+python workspace\scripts\microcavity_large_scan\fit_large_scan_dispersion.py "$env:DAILY_NOTE_DATA_ROOT\experiments\2026-05-28\four_inch_sample_formal_measurement\results\chip7\<current-die>\cX\large_scan_<timestamp>_1530-1570nm_dip_table.csv" --chip chip7 --die <current-die> --cavity cX --depth-threshold 0.2
 
 python workspace\scripts\microcavity_large_scan\fit_large_scan_q.py --data-path "$env:DAILY_NOTE_DATA_ROOT\experiments\2026-05-28\four_inch_sample_formal_measurement\results\chip7\<current-die>\cX\large_scan_<timestamp>_1530-1570nm.npz" --family-points-csv "$env:DAILY_NOTE_DATA_ROOT\experiments\2026-05-28\four_inch_sample_formal_measurement\results\chip7\<current-die>\cX\large_scan_<timestamp>_1530-1570nm_dispersion_auto_centered_family_points.csv" --chip chip7 --die <current-die> --cavity cX --depth-threshold 0.2
 ```
@@ -91,7 +94,7 @@ After fitting, inspect only the new files for that cavity:
 - `<stem>_large_scan_q_trends.png`
 - `<stem>_local_dip_mosaic.png`
 
-Then update the external `session.md` in that cavity subsection. Record:
+For Q large-scan measurements, update the external `session.md` and per-cavity summary immediately after the analysis is judged valid or explicitly invalid. Do not wait for an end-of-day收口 step unless the user explicitly says not to write yet. Record:
 
 - Acquisition facts: CH1 rising trigger at `1 V`, 20 s window, 500 kSa/s actual sample rate, `.npz` path.
 - Processing facts: total dips, `depth > 0.2` dips, FSR candidates near half-FSR and full FSR.
