@@ -1,6 +1,6 @@
 ---
 name: auto-lock-redpitaya-microcavity
-description: Use for the Red Pitaya/PyRPL + TOPTICA DLC PRO microcavity transmission auto-lock workflow in workspace/experiments/2026-05-22/auto_lock_redpitaya_microcavity, especially when continuing the locking session in a new thread, running fast_lock_with_pretune.py, judging apparent linewidth/lockpoint/PID handoff quality, or recording lock attempts.
+description: Use for the Red Pitaya/PyRPL + TOPTICA DLC PRO microcavity transmission auto-lock workflow, especially when continuing the locking session from the external data root, running fast_lock_with_pretune.py, judging apparent linewidth/lockpoint/PID handoff quality, or recording lock attempts.
 ---
 
 # Auto Lock Red Pitaya Microcavity
@@ -12,7 +12,7 @@ Use this skill only for the current Red Pitaya/PyRPL + TOPTICA DLC PRO + microca
 In a new thread, first read:
 
 ```text
-workspace/experiments/2026-05-22/auto_lock_redpitaya_microcavity/session.md
+$DAILY_NOTE_DATA_ROOT/experiments/2026-05-22/auto_lock_redpitaya_microcavity/session.md
 ```
 
 Then use this skill as the operational shortcut. It works together with:
@@ -43,19 +43,19 @@ Default signal and control meanings:
 Main script:
 
 ```text
-workspace/experiments/2026-05-22/auto_lock_redpitaya_microcavity/scripts/fast_lock_with_pretune.py
+workspace/scripts/redpitaya_microcavity_lock/fast_lock_with_pretune.py
 ```
 
 Key dependencies reused by the main script:
 
-- `scripts/pyrpl_live_bridge.py`: local HTTP bridge for PyRPL GUI-visible Red Pitaya control.
-- `scripts/suggest_arc_factor.py`: scope capture, down-sweep dip detection, apparent width, lockpoint, prelock plot.
-- `scripts/tune_arc_fullwidth_center.py`: TOPTICA ARC factor and PC piezo read/write helpers.
+- `workspace/scripts/redpitaya_microcavity_lock/pyrpl_live_bridge.py`: local HTTP bridge for PyRPL GUI-visible Red Pitaya control.
+- `workspace/scripts/redpitaya_microcavity_lock/suggest_arc_factor.py`: scope capture, down-sweep dip detection, apparent width, lockpoint, prelock plot.
+- `workspace/scripts/redpitaya_microcavity_lock/tune_arc_fullwidth_center.py`: TOPTICA ARC factor and PC piezo read/write helpers.
 
 Auxiliary diagnostics:
 
-- `scripts/run_seconds_pid_lock_sweep.py`: static probe, direction diagnosis, manual P/I sweep.
-- `scripts/monitor_pid_state.py`: independent post-lock monitor.
+- `workspace/scripts/redpitaya_microcavity_lock/run_seconds_pid_lock_sweep.py`: static probe, direction diagnosis, manual P/I sweep.
+- `workspace/scripts/redpitaya_microcavity_lock/monitor_pid_state.py`: independent post-lock monitor.
 
 ## Before Running
 
@@ -70,7 +70,7 @@ Check the minimum safe context before touching live outputs:
 Use the TOPTICA SDK environment for the main locking script when needed:
 
 ```powershell
-C:\Users\win10\toptica_lasersdk_venv\Scripts\python.exe scripts\fast_lock_with_pretune.py ...
+C:\Users\win10\toptica_lasersdk_venv\Scripts\python.exe workspace\scripts\redpitaya_microcavity_lock\fast_lock_with_pretune.py ...
 ```
 
 ## Main Workflow
@@ -85,12 +85,12 @@ Use this rhythm for each lock attempt:
 6. Recompute the lockpoint from the fresh sweep using dip-rise 1/4.
 7. Turn off ASG, initialize PID, set `pid0.ival`, set PID target, then enable P/I.
 8. Monitor for a short window, inspect saturation and first-frame handoff transient separately.
-9. Judge the data with the user before writing it into `session.md`.
+9. Judge the data with the user before writing it into the external `session.md`.
 
 Default command template:
 
 ```powershell
-C:\Users\win10\toptica_lasersdk_venv\Scripts\python.exe scripts\fast_lock_with_pretune.py `
+C:\Users\win10\toptica_lasersdk_venv\Scripts\python.exe workspace\scripts\redpitaya_microcavity_lock\fast_lock_with_pretune.py `
   --tag <meaningful_tag> `
   --max-pretune-iterations 10 `
   --max-fractional-step 0.50 `
@@ -176,7 +176,7 @@ out2/ival saturation flags
 periodic oscillation or slow drift
 ```
 
-Write one accepted group into `session.md` with this shape:
+Write one accepted group into the external `session.md` with this shape:
 
 ```text
 ### <date/time or tag>: <short purpose>
@@ -194,4 +194,4 @@ Limit:
 Next check:
 ```
 
-Keep raw large data and tabular run artifacts out of git by default. In GitHub-facing records, prefer `session.md`, code, selected PNGs, and result directory names over committing CSV/JSON outputs. Do not overstate 5 s short locks as long-term stability or measurement SNR proof.
+Keep raw large data, figures, tabular run artifacts, and `session.md` out of git by default. Commit only code/workflow changes; record external result directory names instead of committing CSV/JSON outputs. Do not overstate 5 s short locks as long-term stability or measurement SNR proof.

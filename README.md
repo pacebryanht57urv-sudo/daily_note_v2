@@ -1,27 +1,10 @@
 # Daily Note
 
-这是一个面向科研工作的本地记录与上下文系统。当前重点不是做一个复杂 app，而是把每天的实验、加工、测量、判断、AI 建议和后续计划沉淀成可追溯的 Markdown 资产。
+这是一个科研 workflow 仓库。当前边界是：Git 只保存代码、工作流规则、项目 skills、配置示例和说明文档；实验记录、图片、报告、原始数据和生成结果放在群晖或本机外部数据根目录，不进入 Git。
 
-核心目标：
+默认外部数据根由环境变量 `DAILY_NOTE_DATA_ROOT` 指定。现场脚本仍支持显式传入 `--output-dir` 或输入文件路径；如果脚本需要自动寻找默认结果目录但没有设置 `DAILY_NOTE_DATA_ROOT`，应直接报错，避免把数据写回仓库。
 
-- 让自然语言记录成为主要交互方式。
-- 把事实记录、现场判断、AI 建议和待确认事项分开。
-- 把实验 session、图片证据、参数和后续测试计划组织到同一目录中。
-- 支持后续生成日总结、周总结和组会材料。
-- 优先沉淀目录约定、项目 skill 和 session 模板；工具只在确实减少心智负担时再生成。
-
-## 当前定位
-
-本仓库是一个由自然语言记录驱动的科研工作目录。当前主要包含：
-
-- 项目协作规则：`AGENTS.md`
-- 项目内可复用 skills：`workspace/skills/`
-- 实验和微加工 session：`workspace/experiments/`
-- 配置示例：`config.local.example.json`
-
-现阶段主线是：用自然语言记录现场过程，由 Codex 整理成结构化 session，并把关键图片保存为 session 资产。仓库不预设复杂 CLI 或后台服务；如果未来确实需要工具，应从已经稳定的记录习惯中抽象出来。
-
-## 目录结构
+## Repository Contents
 
 ```text
 .
@@ -29,115 +12,54 @@
 |-- README.md
 |-- config.local.example.json
 `-- workspace/
-    |-- experiments/
-    |   |-- README.md
-    |   `-- 2026-05-20/
-    |       `-- deep_si_etch_pku_changping/
-    |           |-- session.md
-    |           `-- images/
+    |-- scripts/
+    |   |-- microcavity_large_scan/
+    |   `-- redpitaya_microcavity_lock/
     `-- skills/
+        |-- auto-lock-redpitaya-microcavity/
         |-- daily-summary/
-        `-- microfabrication-session/
+        |-- git-collaboration/
+        |-- measurement-session/
+        |-- microfabrication-session/
+        `-- scientific-plotting/
 ```
 
-## 记录原则
+## Data Boundary
 
-日常记录遵循四类信息分离：
+- `workspace/scripts/`：采集、处理、分析和仪器 workflow 代码。
+- `workspace/skills/`：Codex 可复用的记录、总结、测量和绘图规则。
+- `AGENTS.md`：项目级协作规则。
+- `config.local.example.json`：可提交的配置示例。
+- 外部数据根：实验 session、图片、结果、报告、notes、文献摘录和原始数据。
 
-- 事实记录：实际发生的操作、参数、测量结果。
-- 现场判断：当时对原因、风险、趋势的判断。
-- AI 建议：AI 给出的解释、下一步建议或风险提醒。
-- 待确认事项：尚不确定、需要复查或后续测量的信息。
+仓库默认忽略 `workspace/experiments/`、`workspace/reports/`、`workspace/notes/`、`workspace/literature/` 和 `workspace/data/`。这些目录可以作为本机临时工作区或群晖同步挂载点使用，但不作为 Git 资产。
 
-当信息缺口会影响计算、归类、参数有效性或后续决策时，应在现场即时追问，而不是等到晚上总结时统一补。
+## Current Scripts
 
-## 微加工 session
+大扫测量脚本位于：
 
-微加工、器件加工、ICP、深硅刻蚀、除胶、裂片等现场记录，遵循：
-
-[workspace/skills/microfabrication-session/SKILL.md](workspace/skills/microfabrication-session/SKILL.md)
-
-典型 session 结构：
-
-```text
-workspace/experiments/YYYY-MM-DD/<process-name>/
-  session.md
-  images/
+```powershell
+workspace\scripts\microcavity_large_scan\
 ```
 
-`session.md` 应记录：
+Red Pitaya / PyRPL 微腔锁模脚本位于：
 
-- 基本信息和样品命名规则。
-- recipe、气压、功率、流量、温度、cycle 数。
-- 标定片和正式样品的区别。
-- 装载方式、压环、载片、固定介质和异常风险。
-- 加工过程中的阶段观察。
-- 后处理、除胶、裂片结果。
-- 后续测试计划与关注点。
-- 待确认事项。
+```powershell
+workspace\scripts\redpitaya_microcavity_lock\
+```
 
-现场图片、显微图和加工后照片应保存到 session 的 `images/` 目录中，并在 `session.md` 中引用。图片不应只留在聊天附件、Lark 缓存或临时路径里，因为后续周总结和组会材料需要图文并茂。
+推荐在测量电脑上设置：
 
-示例：
+```powershell
+$env:DAILY_NOTE_DATA_ROOT = "Z:\daily_note_data"
+```
 
-[workspace/experiments/2026-05-20/deep_si_etch_pku_changping/session.md](workspace/experiments/2026-05-20/deep_si_etch_pku_changping/session.md)
+其中 `Z:\daily_note_data` 可以是群晖映射盘、本机数据盘或其他不在 Git 仓库内的目录。
 
-## 日总结与周总结
+## Collaboration Rules
 
-日总结 skill 位于：
+- 不提交实验记录、图片、报告、原始数据、`.npz`、`.mat`、结果 `.csv` 或结果 `.json`。
+- 记录中只引用外部数据路径、样品编号、数据编号和关键结论。
+- 改脚本或 workflow 前先检查 `git status --short --branch`。
+- 提交前检查 `git diff --cached --stat`，确认 staged 内容只包含代码、skills、规则和配置示例。
 
-[workspace/skills/daily-summary/SKILL.md](workspace/skills/daily-summary/SKILL.md)
-
-后续总结应优先读取：
-
-- `workspace/notes/`：每日自然语言原始记录。
-- `workspace/experiments/`：实验、测量和加工 session。
-- `workspace/skills/`：项目内总结和记录方法。
-
-周总结和组会材料应从 session 的 `images/` 中选图，而不是回聊天记录中查找图片。
-
-## 不提交的内容
-
-`.gitignore` 默认排除：
-
-- 本地密钥和机器配置：`config.local.json`
-- 运行索引和状态：`workspace/indexes/`
-- 每日原始 notes：`workspace/notes/`
-- 生成报告：`workspace/reports/daily/`
-- 临时聊天附件：`.codex-remote-attachments/`
-- 原始大数据和本地临时文件
-
-原则上，仓库中保存的是轻量、可复盘、可汇报的上下文资产；原始大数据只记录路径或编号，不默认同步进仓库。
-
-## 与 Codex 协作
-
-在这个项目里，Codex 的默认职责是：
-
-- 读取项目上下文和已有规则。
-- 帮助把自然语言记录整理成 Markdown session。
-- 对关键缺失信息即时追问。
-- 区分事实、判断、建议和待确认事项。
-- 保存重要图片到 session 目录。
-- 在生成正式记录前做短收口：确认关键照片、可测 chip/die 数量、下一步是测量还是继续加工。
-- 给出少量基于记录的下一步建议。
-
-如果是中等以上复杂度的功能开发，应先写清楚计划、修改范围、复用模块、测试方式和停止条件，再进入执行。
-
-## 当前状态
-
-当前仓库已经包含一个完整的深硅刻蚀加工 session 示例，展示了：
-
-- Bosch 深硅刻蚀参数记录。
-- SiO2 消耗速率标定。
-- Si 刻蚀速率估算。
-- 正式样品装载和硅油污染异常记录。
-- 230 cycle 后停止刻蚀的现场决策。
-- 除胶、裂片和 chip/die 命名体系。
-- 图片资产化保存。
-
-下一步更适合继续完善：
-
-- chip/die 级测试表。
-- 测腔性能记录模板。
-- 周总结图文生成流程。
-- 只有在记录流程稳定后，再考虑把重复操作沉淀成小工具。
