@@ -53,6 +53,11 @@ class ScanConfig:
     arm_delay_s: float
     post_scan_wait_s: float
     laser_settle_timeout_s: float
+    cycle_emission_before_scan: bool
+    cycle_emission_after_scan: bool
+    emission_off_seconds: float
+    emission_on_settle_seconds: float
+    restore_wavelength_mode: str
     storage_format: str
     output_dir: str
 
@@ -99,7 +104,10 @@ class TopticaDlcPro:
         return self.query(f"(param-ref '{name})")
 
     def set(self, expression: str) -> str:
-        return self.query(f"(param-set! '{expression})")
+        response = self.query(f"(param-set! '{expression})")
+        if response.startswith("Error:"):
+            raise RuntimeError(f"TOPTICA param-set failed for {expression!r}: {response}")
+        return response
 
     def command(self, expression: str) -> str:
         return self.query(f"(exec '{expression})")
@@ -142,6 +150,9 @@ class TopticaDlcPro:
     def configure_fine_scan_arc_factor(self, factor_v_per_v: float = 25.0) -> None:
         self.set_arc_factor(factor_v_per_v)
         self.set_arc_factor_enabled(True)
+
+    def set_emission_enabled(self, enabled: bool) -> None:
+        self.set(f"laser1:dl:cc:enabled {'#t' if enabled else '#f'}")
 
 
 class RohdeSchwarzRte:
@@ -362,6 +373,28 @@ def parse_args(argv: Iterable[str]) -> argparse.Namespace:
     parser.add_argument("--post-scan-wait-s", type=float, default=2.0)
     parser.add_argument("--laser-settle-timeout-s", type=float, default=90.0)
     parser.add_argument(
+        "--cycle-emission-before-scan",
+        action="store_true",
+        help="At the scan start wavelength, turn TOPTICA emission off, wait, turn it on, wait, then start the large scan.",
+    )
+    parser.add_argument(
+        "--cycle-emission-after-scan",
+        action="store_true",
+        help="After waveform readout, turn TOPTICA emission off, wait, turn it on, then restore the requested wavelength.",
+    )
+    parser.add_argument("--emission-off-seconds", type=float, default=2.0)
+    parser.add_argument("--emission-on-settle-seconds", type=float, default=2.0)
+    parser.add_argument(
+        "--restore-wavelength-mode",
+        choices=["fine-center", "initial", "none"],
+        default="fine-center",
+        help=(
+            "Wavelength restore target after the large scan. 'fine-center' uses --fine-center-nm; "
+            "'initial' returns to the laser wavelength read before moving to the large-scan start; "
+            "'none' leaves the laser at the post-scan state."
+        ),
+    )
+    parser.add_argument(
         "--storage-format",
         choices=["csv", "npz", "npz-compressed", "both"],
         default="csv",
@@ -433,6 +466,11 @@ def main(argv: Iterable[str]) -> int:
         arm_delay_s=args.arm_delay_s,
         post_scan_wait_s=args.post_scan_wait_s,
         laser_settle_timeout_s=args.laser_settle_timeout_s,
+        cycle_emission_before_scan=args.cycle_emission_before_scan,
+        cycle_emission_after_scan=args.cycle_emission_after_scan,
+        emission_off_seconds=args.emission_off_seconds,
+        emission_on_settle_seconds=args.emission_on_settle_seconds,
+        restore_wavelength_mode=args.restore_wavelength_mode,
         storage_format=args.storage_format,
         output_dir=str(output_dir),
     )
@@ -454,6 +492,9 @@ def main(argv: Iterable[str]) -> int:
     try:
         print("Connecting to TOPTICA DLC PRO...")
         laser = TopticaDlcPro(args.laser_port)
+        initial_wavelength_nm = laser.wavelength_nm()
+        meta["laser_initial_readback_nm"] = initial_wavelength_nm
+        print(f"Initial laser readback before large-scan setup: {initial_wavelength_nm:.9f} nm")
         if not args.keep_arc_factor_during_large_scan:
             print("Disabling TOPTICA external input arc factor for large scan...")
             laser.set_arc_factor_enabled(False)
@@ -480,6 +521,17 @@ def main(argv: Iterable[str]) -> int:
         print(f"Moving laser to start wavelength {args.start_nm:g} nm...")
         laser.move_to_wavelength(args.start_nm, args.laser_settle_timeout_s)
         meta["laser_start_readback_nm"] = laser.wavelength_nm()
+
+        if args.cycle_emission_before_scan:
+            print("Cycling TOPTICA emission before scan: OFF...")
+            laser.set_emission_enabled(False)
+            time.sleep(args.emission_off_seconds)
+            meta["emission_cycle_off_seconds"] = args.emission_off_seconds
+            print("Cycling TOPTICA emission before scan: ON...")
+            laser.set_emission_enabled(True)
+            time.sleep(args.emission_on_settle_seconds)
+            meta["emission_cycle_on_settle_seconds"] = args.emission_on_settle_seconds
+            meta["laser_start_readback_after_emission_cycle_nm"] = laser.wavelength_nm()
 
         print("Configuring oscilloscope acquisition and CH1 trigger...")
         scope.stop()
@@ -549,9 +601,36 @@ def main(argv: Iterable[str]) -> int:
         meta_path.write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
         print(f"Saved metadata to {meta_path}")
         if not args.no_restore_fine_scope:
-            print(f"Moving TOPTICA back to fine-scan center wavelength {args.fine_center_nm:g} nm...")
-            laser.move_to_wavelength(args.fine_center_nm, args.laser_settle_timeout_s)
-            meta["laser_fine_center_readback_nm"] = laser.wavelength_nm()
+            if args.cycle_emission_after_scan:
+                print("Cycling TOPTICA emission after scan: OFF...")
+                laser.set_emission_enabled(False)
+                time.sleep(args.emission_off_seconds)
+                meta["emission_post_cycle_off_seconds"] = args.emission_off_seconds
+                print("Cycling TOPTICA emission after scan: ON...")
+                laser.set_emission_enabled(True)
+                time.sleep(args.emission_on_settle_seconds)
+                meta["emission_post_cycle_on_settle_seconds"] = args.emission_on_settle_seconds
+                meta["laser_readback_after_post_emission_cycle_nm"] = laser.wavelength_nm()
+
+            if args.restore_wavelength_mode == "initial":
+                restore_nm = initial_wavelength_nm
+                print(f"Moving TOPTICA back to initial wavelength {restore_nm:.9f} nm...")
+                laser.move_to_wavelength(restore_nm, args.laser_settle_timeout_s)
+                meta["laser_restore_target_nm"] = restore_nm
+                meta["laser_restore_readback_nm"] = laser.wavelength_nm()
+            elif args.restore_wavelength_mode == "fine-center":
+                restore_nm = args.fine_center_nm
+                print(f"Moving TOPTICA back to fine-scan center wavelength {restore_nm:g} nm...")
+                laser.move_to_wavelength(restore_nm, args.laser_settle_timeout_s)
+                meta["laser_restore_target_nm"] = restore_nm
+                meta["laser_restore_readback_nm"] = laser.wavelength_nm()
+                meta["laser_fine_center_readback_nm"] = meta["laser_restore_readback_nm"]
+            else:
+                print("Leaving TOPTICA wavelength at post-scan state (--restore-wavelength-mode none).")
+                meta["laser_restore_target_nm"] = None
+                meta["laser_restore_readback_nm"] = laser.wavelength_nm()
+
+            meta["laser_restore_mode"] = args.restore_wavelength_mode
             meta_path.write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
             print("Restoring TOPTICA external input arc factor for fine scan...")
             laser.configure_fine_scan_arc_factor(args.fine_arc_factor_v_per_v)
