@@ -20,7 +20,7 @@ import numpy as np
 from scipy.optimize import curve_fit
 
 from chip7_design import expected_chip7_fsr_mhz
-from data_paths import DATA_ROOT_ENV, default_cavity_dir
+from data_paths import CAMPAIGN_ENV, CHIP_ENV, DATA_ROOT_ENV, default_campaign, default_chip, default_cavity_dir
 from process_large_scan import normalize_transmission_with_baseline, read_large_scan_data
 
 DISPLAY_COLORS = {
@@ -30,13 +30,26 @@ DISPLAY_COLORS = {
     "mode4": "#9467bd",
 }
 FAMILY_KEYS = ("lower_branch", "upper_branch", "middle_branch", "extra_branch")
-MIN_TRACK_SPACING_FRACTION = 0.65
-MAX_TRACK_SPACING_FRACTION = 1.35
+MIN_TRACK_SPACING_FRACTION = 0.88
+MAX_TRACK_SPACING_FRACTION = 1.12
 MAX_TRACK_MODE_SKIP = 3
 MIN_DEPTH_CLUSTER_GAP = 0.12
 MIN_DEPTH_CLUSTER_SIZE = 4
 MIN_PARALLEL_BIN_COUNT = 4
-MAX_SEED_TRACK_RMS_FRACTION = 0.02
+MAX_SEED_TRACK_RMS_FRACTION = 0.008
+MAX_TRACK_SPACING_ERROR_FRACTION = 0.08
+MAX_TRACK_SPACING_RMS_FRACTION = 0.04
+MIN_RECOVERED_FAMILY_POINTS = 8
+MIN_RECOVERED_MODE_SPAN = 6
+MAX_RECOVERED_RMS_MHZ = 120.0
+MAX_RECOVERED_ABS_RESIDUAL_MHZ = 500.0
+RECOVERY_INITIAL_WINDOW_FRACTION = 0.18
+RECOVERY_DUPLICATE_OVERLAP_FRACTION = 0.55
+BRANCH_EXTENSION_RESIDUAL_FRACTION = 0.025
+BRANCH_EXTENSION_MIN_TOLERANCE_MHZ = 2_500.0
+BRANCH_EXTENSION_RMS_GROWTH_LIMIT = 1.25
+BRANCH_EXTENSION_ABS_RESIDUAL_FRACTION = 0.004
+BRANCH_EXTENSION_MIN_DEPTH = 0.35
 
 
 @dataclass
@@ -50,6 +63,24 @@ class FitConfig:
     output_dir: str
 
 
+def process_summary_fsr_mhz(dip_table: Path, output_dir: Path, stem: str) -> float | None:
+    candidates = [
+        output_dir / f"{stem}_process_summary.json",
+        output_dir / "process_summary.json",
+        dip_table.with_name(f"{stem}_process_summary.json"),
+        dip_table.with_name("process_summary.json"),
+    ]
+    for path in candidates:
+        if not path.exists():
+            continue
+        try:
+            summary = json.loads(path.read_text(encoding="utf-8"))
+            return float(summary["config"]["disk_fsr_mhz"])
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            continue
+    return None
+
+
 def poly2(mode: np.ndarray, c0: float, d1_corr: float, d2: float) -> np.ndarray:
     return c0 + d1_corr * mode + 0.5 * d2 * mode**2
 
@@ -60,6 +91,42 @@ def poly3(mode: np.ndarray, c0: float, d1_corr: float, d2: float, d3: float) -> 
 
 def wrap_frequency(freq_mhz: np.ndarray | float, fsr_mhz: float) -> np.ndarray | float:
     return (freq_mhz + fsr_mhz / 2.0) % fsr_mhz - fsr_mhz / 2.0
+
+
+def folded_key_for_mode_key(mode_key: str) -> str:
+    return "folded_freq_centered_mhz" if mode_key.endswith("_centered") else "folded_freq_ref_mhz"
+
+
+def unwrapped_track_arrays(
+    track: list[dict[str, float]],
+    reference_fsr_mhz: float,
+    *,
+    mode_key: str,
+    folded_key: str | None = None,
+) -> tuple[list[dict[str, float]], np.ndarray, np.ndarray]:
+    ordered = sorted(track, key=lambda item: int(item[mode_key]))
+    if not ordered:
+        return [], np.array([], dtype=float), np.array([], dtype=float)
+    folded_key = folded_key or folded_key_for_mode_key(mode_key)
+    modes = np.array([int(row[mode_key]) for row in ordered], dtype=float)
+    folded = [float(row[folded_key]) for row in ordered]
+    center_index = min(range(len(ordered)), key=lambda index: abs(modes[index]))
+    unwrapped: list[float | None] = [None] * len(ordered)
+    unwrapped[center_index] = folded[center_index]
+
+    for index in range(center_index + 1, len(ordered)):
+        previous = float(unwrapped[index - 1])
+        k = round((previous - folded[index]) / reference_fsr_mhz)
+        candidates = [folded[index] + (k + delta) * reference_fsr_mhz for delta in range(-2, 3)]
+        unwrapped[index] = min(candidates, key=lambda value: abs(value - previous))
+
+    for index in range(center_index - 1, -1, -1):
+        previous = float(unwrapped[index + 1])
+        k = round((previous - folded[index]) / reference_fsr_mhz)
+        candidates = [folded[index] + (k + delta) * reference_fsr_mhz for delta in range(-2, 3)]
+        unwrapped[index] = min(candidates, key=lambda value: abs(value - previous))
+
+    return ordered, modes, np.array([float(value) for value in unwrapped], dtype=float)
 
 
 def common_mode_and_folded(
@@ -107,11 +174,7 @@ def add_centered_coordinates(row: dict[str, float], reference_fsr_mhz: float, of
     return item
 
 
-def split_families(rows: list[dict[str, float]], reference_fsr_mhz: float) -> dict[str, list[dict[str, float]]]:
-    continuous = split_families_by_continuous_fsr(rows, reference_fsr_mhz)
-    if any(continuous.values()):
-        return continuous
-
+def split_families_by_parallel_bins(rows: list[dict[str, float]]) -> dict[str, list[dict[str, float]]]:
     candidates = [row for row in rows if row["depth_1_minus_norm"] > 0.35]
     by_mode: dict[int, list[dict[str, float]]] = {}
     for row in candidates:
@@ -169,6 +232,38 @@ def split_families(rows: list[dict[str, float]], reference_fsr_mhz: float) -> di
             remaining.remove(family)
 
     return {family: sorted(family_rows, key=lambda item: item["mode_number_ref"]) for family, family_rows in families.items()}
+
+
+def assigned_row_count(families: dict[str, list[dict[str, float]]]) -> int:
+    seen = {int(row["sample_index"]) for family_rows in families.values() for row in family_rows}
+    return len(seen)
+
+
+def populated_family_count(families: dict[str, list[dict[str, float]]], min_count: int = MIN_DEPTH_CLUSTER_SIZE) -> int:
+    return sum(1 for family_rows in families.values() if len(family_rows) >= min_count)
+
+
+def split_families(rows: list[dict[str, float]], reference_fsr_mhz: float) -> dict[str, list[dict[str, float]]]:
+    continuous = split_families_by_continuous_fsr(rows, reference_fsr_mhz)
+    binned = {
+        family: family_rows if track_is_spacing_usable(family_rows, reference_fsr_mhz) else []
+        for family, family_rows in split_families_by_parallel_bins(rows).items()
+    }
+
+    continuous_families = populated_family_count(continuous)
+    binned_families = populated_family_count(binned)
+    continuous_rows = assigned_row_count(continuous)
+    binned_rows = assigned_row_count(binned)
+
+    # The graph-based continuous-FSR splitter is precise when all visible branches
+    # connect cleanly, but it can return after finding only one branch and leave
+    # obvious one-FSR panel modes unassigned. In that case, prefer the parallel
+    # per-mode-bin assignment used for multi-family chip7 scans.
+    if binned_families > continuous_families and binned_rows >= max(continuous_rows, MIN_PARALLEL_BIN_COUNT):
+        return binned
+    if any(continuous.values()):
+        return continuous
+    return binned
 
 
 def rows_are_connected_by_fsr(left: dict[str, float], right: dict[str, float], reference_fsr_mhz: float) -> bool:
@@ -253,6 +348,16 @@ def split_families_by_continuous_fsr(rows: list[dict[str, float]], reference_fsr
             families[key] = track
         return families
 
+    components = connected_components_by_fsr(rows, reference_fsr_mhz)
+    assigned_components = filter_usable_seed_tracks(
+        [assign_sequence_modes(component, reference_fsr_mhz) for component in components if len(component) >= 4],
+        reference_fsr_mhz,
+    )
+    if assigned_components:
+        for key, component in zip(FAMILY_KEYS, sorted(assigned_components, key=track_sort_key)):
+            families[key] = component
+        return families
+
     depth_bands = split_depth_bands(rows)
     if len(depth_bands) >= 2:
         tracks: list[list[dict[str, float]]] = []
@@ -264,18 +369,6 @@ def split_families_by_continuous_fsr(rows: list[dict[str, float]], reference_fsr
         )
         for key, track in zip(FAMILY_KEYS, sorted(assigned_tracks, key=track_sort_key)):
             families[key] = track
-        return families
-
-    components = connected_components_by_fsr(rows, reference_fsr_mhz)
-    assigned_components = filter_usable_seed_tracks(
-        [assign_sequence_modes(component, reference_fsr_mhz) for component in components if len(component) >= 4],
-        reference_fsr_mhz,
-    )
-    if not assigned_components:
-        return families
-
-    for key, component in zip(FAMILY_KEYS, sorted(assigned_components, key=track_sort_key)):
-        families[key] = component
     return families
 
 
@@ -326,7 +419,7 @@ def split_parallel_tracks_by_iterative_assignment(
         reference_fsr_mhz,
     )
     for _iteration in range(4):
-        models = [fit_track_model(track) for track in tracks]
+        models = [fit_track_model(track, reference_fsr_mhz) for track in tracks]
         tracks = assign_rows_to_track_models(by_mode, models, reference_fsr_mhz)
 
     return [track for track in tracks if len(track) >= MIN_DEPTH_CLUSTER_SIZE]
@@ -337,25 +430,96 @@ def filter_usable_seed_tracks(
     reference_fsr_mhz: float,
 ) -> list[list[dict[str, float]]]:
     max_rms_mhz = MAX_SEED_TRACK_RMS_FRACTION * reference_fsr_mhz
-    return [track for track in tracks if track_quadratic_rms_mhz(track, reference_fsr_mhz) <= max_rms_mhz]
+    return [
+        track
+        for track in tracks
+        if track_quadratic_rms_mhz(track, reference_fsr_mhz) <= max_rms_mhz
+        and track_is_spacing_usable(track, reference_fsr_mhz)
+    ]
 
 
 def track_quadratic_rms_mhz(track: list[dict[str, float]], reference_fsr_mhz: float) -> float:
     if len(track) < MIN_DEPTH_CLUSTER_SIZE:
         return math.inf
-    mode = np.array([row["mode_number_ref"] for row in track], dtype=float)
-    folded = np.array([row["folded_freq_ref_mhz"] for row in track], dtype=float)
+    _ordered, mode, folded = unwrapped_track_arrays(track, reference_fsr_mhz, mode_key="mode_number_ref")
     degree = min(2, len(track) - 1)
     coeff = np.polyfit(mode, folded, deg=degree)
-    residual = np.asarray(wrap_frequency(folded - np.polyval(coeff, mode), reference_fsr_mhz), dtype=float)
+    residual = folded - np.polyval(coeff, mode)
     return float(np.sqrt(np.mean(residual**2)))
 
 
-def fit_track_model(track: list[dict[str, float]]) -> tuple[int, np.ndarray]:
+def track_spacing_quality(
+    track: list[dict[str, float]],
+    reference_fsr_mhz: float,
+    *,
+    mode_key: str = "mode_number_ref",
+) -> dict[str, float | int | bool]:
+    if len(track) < 2:
+        return {
+            "adjacent_pair_count": 0,
+            "max_mode_gap": 0,
+            "median_spacing_per_mode_mhz": math.nan,
+            "rms_spacing_error_mhz": math.inf,
+            "max_abs_spacing_error_mhz": math.inf,
+            "max_abs_spacing_error_fraction": math.inf,
+            "spacing_ok": False,
+        }
+
+    ordered, modes, unwrapped = unwrapped_track_arrays(track, reference_fsr_mhz, mode_key=mode_key)
+    errors: list[float] = []
+    spacings: list[float] = []
+    max_mode_gap = 0
+    for index in range(len(ordered) - 1):
+        mode_gap = int(modes[index + 1] - modes[index])
+        if mode_gap <= 0:
+            continue
+        folded_step_per_mode = float(unwrapped[index + 1] - unwrapped[index]) / mode_gap
+        spacing_per_mode = reference_fsr_mhz + folded_step_per_mode
+        spacings.append(spacing_per_mode)
+        errors.append(folded_step_per_mode)
+        max_mode_gap = max(max_mode_gap, mode_gap)
+
+    if not errors:
+        rms_error = math.inf
+        max_abs_error = math.inf
+        max_abs_fraction = math.inf
+        median_spacing = math.nan
+    else:
+        err = np.array(errors, dtype=float)
+        rms_error = float(np.sqrt(np.mean(err**2)))
+        max_abs_error = float(np.max(np.abs(err)))
+        max_abs_fraction = max_abs_error / reference_fsr_mhz
+        median_spacing = float(np.median(spacings))
+    spacing_ok = (
+        len(errors) >= max(1, min(len(track) - 1, MIN_DEPTH_CLUSTER_SIZE - 1))
+        and max_mode_gap <= MAX_TRACK_MODE_SKIP
+        and max_abs_fraction <= MAX_TRACK_SPACING_ERROR_FRACTION
+        and rms_error / reference_fsr_mhz <= MAX_TRACK_SPACING_RMS_FRACTION
+    )
+    return {
+        "adjacent_pair_count": len(errors),
+        "max_mode_gap": int(max_mode_gap),
+        "median_spacing_per_mode_mhz": median_spacing,
+        "rms_spacing_error_mhz": rms_error,
+        "max_abs_spacing_error_mhz": max_abs_error,
+        "max_abs_spacing_error_fraction": max_abs_fraction,
+        "spacing_ok": bool(spacing_ok),
+    }
+
+
+def track_is_spacing_usable(
+    track: list[dict[str, float]],
+    reference_fsr_mhz: float,
+    *,
+    mode_key: str = "mode_number_ref",
+) -> bool:
+    return bool(track_spacing_quality(track, reference_fsr_mhz, mode_key=mode_key)["spacing_ok"])
+
+
+def fit_track_model(track: list[dict[str, float]], reference_fsr_mhz: float) -> tuple[int, np.ndarray]:
     if not track:
         return 0, np.array([0.0], dtype=float)
-    mode = np.array([row["mode_number_ref"] for row in track], dtype=float)
-    folded = np.array([row["folded_freq_ref_mhz"] for row in track], dtype=float)
+    _ordered, mode, folded = unwrapped_track_arrays(track, reference_fsr_mhz, mode_key="mode_number_ref")
     degree = min(2, len(track) - 1)
     coeff = np.polyfit(mode, folded, deg=degree)
     return degree, coeff
@@ -502,20 +666,21 @@ def display_labels_by_depth(families: dict[str, list[dict[str, float]]]) -> dict
 def fit_family(name: str, rows: list[dict[str, float]], reference_fsr_mhz: float) -> dict[str, object]:
     if len(rows) < 4:
         return {"name": name, "count": len(rows), "status": "too_few_points"}
-    mode = np.array([row["mode_number_ref"] for row in rows], dtype=float)
-    folded = np.array([row["folded_freq_ref_mhz"] for row in rows], dtype=float)
-    depth = np.array([row["depth_1_minus_norm"] for row in rows], dtype=float)
+    ordered_rows, mode, folded = unwrapped_track_arrays(rows, reference_fsr_mhz, mode_key="mode_number_ref")
+    depth = np.array([row["depth_1_minus_norm"] for row in ordered_rows], dtype=float)
     sigma = 1.0 / np.maximum(depth, 0.05)
 
     p2, _ = curve_fit(poly2, mode, folded, sigma=sigma, absolute_sigma=False, maxfev=20_000)
     r2 = folded - poly2(mode, *p2)
     p3, _ = curve_fit(poly3, mode, folded, sigma=sigma, absolute_sigma=False, maxfev=20_000)
     r3 = folded - poly3(mode, *p3)
+    spacing_quality = track_spacing_quality(rows, reference_fsr_mhz, mode_key="mode_number_ref")
     return {
         "name": name,
         "count": len(rows),
         "mode_min": int(np.min(mode)),
         "mode_max": int(np.max(mode)),
+        "spacing_quality": spacing_quality,
         "quadratic": {
             "offset_mhz": float(p2[0]),
             "d1_correction_mhz": float(p2[1]),
@@ -541,7 +706,7 @@ def fit_family(name: str, rows: list[dict[str, float]], reference_fsr_mhz: float
                 "wavelength_nm": float(row["wavelength_nm_linear"]),
                 "sample_index": int(row["sample_index"]),
             }
-            for row in rows
+            for row in ordered_rows
         ],
     }
 
@@ -549,21 +714,22 @@ def fit_family(name: str, rows: list[dict[str, float]], reference_fsr_mhz: float
 def fit_family_centered(name: str, rows: list[dict[str, float]], reference_fsr_mhz: float) -> dict[str, object]:
     if len(rows) < 4:
         return {"name": name, "count": len(rows), "status": "too_few_points"}
-    mode = np.array([row["mode_number_centered"] for row in rows], dtype=float)
-    folded = np.array([row["folded_freq_centered_mhz"] for row in rows], dtype=float)
-    depth = np.array([row["depth_1_minus_norm"] for row in rows], dtype=float)
+    ordered_rows, mode, folded = unwrapped_track_arrays(rows, reference_fsr_mhz, mode_key="mode_number_centered")
+    depth = np.array([row["depth_1_minus_norm"] for row in ordered_rows], dtype=float)
     sigma = 1.0 / np.maximum(depth, 0.05)
 
     p2, _ = curve_fit(poly2, mode, folded, sigma=sigma, absolute_sigma=False, maxfev=20_000)
-    r2 = np.asarray(wrap_frequency(folded - poly2(mode, *p2), reference_fsr_mhz), dtype=float)
+    r2 = folded - poly2(mode, *p2)
     p3, _ = curve_fit(poly3, mode, folded, sigma=sigma, absolute_sigma=False, maxfev=20_000)
-    r3 = np.asarray(wrap_frequency(folded - poly3(mode, *p3), reference_fsr_mhz), dtype=float)
+    r3 = folded - poly3(mode, *p3)
+    spacing_quality = track_spacing_quality(ordered_rows, reference_fsr_mhz, mode_key="mode_number_centered")
     return {
         "name": name,
-        "count": len(rows),
-        "auto_offset_mhz": float(rows[0]["auto_offset_mhz"]),
+        "count": len(ordered_rows),
+        "auto_offset_mhz": float(ordered_rows[0]["auto_offset_mhz"]),
         "mode_min": int(np.min(mode)),
         "mode_max": int(np.max(mode)),
+        "spacing_quality": spacing_quality,
         "quadratic": {
             "offset_mhz": float(p2[0]),
             "d1_correction_mhz": float(p2[1]),
@@ -590,7 +756,7 @@ def fit_family_centered(name: str, rows: list[dict[str, float]], reference_fsr_m
                 "wavelength_nm": float(row["wavelength_nm_linear"]),
                 "sample_index": int(row["sample_index"]),
             }
-            for index, row in enumerate(rows)
+            for index, row in enumerate(ordered_rows)
         ],
     }
 
@@ -602,14 +768,14 @@ def select_closest_per_mode(
     fit_params: np.ndarray,
     tolerance_mhz: float,
 ) -> list[dict[str, float]]:
-    by_mode: dict[int, tuple[float, dict[str, float]]] = {}
+    by_mode: dict[int, tuple[tuple[float, float], dict[str, float]]] = {}
     for row in rows:
         mode = int(row["mode_number_centered"])
         predicted = poly2(np.array([mode], dtype=float), *fit_params)[0]
         residual = float(wrap_frequency(row["folded_freq_centered_mhz"] - predicted, reference_fsr_mhz))
         if abs(residual) > tolerance_mhz:
             continue
-        score = abs(residual) / max(row["depth_1_minus_norm"], 0.05)
+        score = (abs(residual), -float(row["depth_1_minus_norm"]))
         if mode not in by_mode or score < by_mode[mode][0]:
             picked = dict(row)
             picked["auto_residual_mhz"] = residual
@@ -695,6 +861,581 @@ def auto_center_families(
         auto_families[name] = rows
         auto_fits.append(fit)
     return auto_families, auto_fits
+
+
+def prune_auto_centered_family_outliers(
+    families: dict[str, list[dict[str, float]]],
+    *,
+    reference_fsr_mhz: float,
+    max_abs_residual_mhz: float = 500.0,
+    rms_residual_mhz: float = 120.0,
+    min_points: int = 10,
+) -> tuple[dict[str, list[dict[str, float]]], dict[str, list[dict[str, float]]]]:
+    pruned: dict[str, list[dict[str, float]]] = {}
+    prune_log: dict[str, list[dict[str, float]]] = {}
+    for family, rows in families.items():
+        current = list(rows)
+        removed: list[dict[str, float]] = []
+        while len(current) > min_points:
+            fit = fit_family_centered(family, current, reference_fsr_mhz)
+            quad = fit.get("quadratic")
+            points = fit.get("points", [])
+            if not quad or not points:
+                break
+            if (
+                float(quad["max_abs_residual_mhz"]) <= max_abs_residual_mhz
+                and float(quad["rms_residual_mhz"]) <= rms_residual_mhz
+            ):
+                break
+            worst = max(points, key=lambda item: abs(float(item["residual_mhz"])))
+            worst_index = int(worst["sample_index"])
+            removed.append(
+                {
+                    "sample_index": worst_index,
+                    "mode_number": int(worst["mode_number"]),
+                    "wavelength_nm": float(worst["wavelength_nm"]),
+                    "residual_mhz": float(worst["residual_mhz"]),
+                }
+            )
+            current = [row for row in current if int(round(float(row["sample_index"]))) != worst_index]
+        pruned[family] = current
+        prune_log[family] = removed
+    return pruned, prune_log
+
+
+def sample_index(row: dict[str, float]) -> int:
+    return int(round(float(row["sample_index"])))
+
+
+def family_sample_indices(rows: list[dict[str, float]]) -> set[int]:
+    return {sample_index(row) for row in rows}
+
+
+def candidate_balance_ok(rows: list[dict[str, float]]) -> bool:
+    modes = [int(row["mode_number_centered"]) for row in rows]
+    if not modes:
+        return False
+    if max(modes) - min(modes) < MIN_RECOVERED_MODE_SPAN:
+        return False
+    return sum(mode < 0 for mode in modes) >= 2 and sum(mode > 0 for mode in modes) >= 2
+
+
+def fit_is_recovered_family_candidate(fit: dict[str, object], rows: list[dict[str, float]]) -> bool:
+    if len(rows) < MIN_RECOVERED_FAMILY_POINTS:
+        return False
+    if not candidate_balance_ok(rows):
+        return False
+    quadratic = fit.get("quadratic")
+    if not quadratic:
+        return False
+    if float(quadratic["rms_residual_mhz"]) > MAX_RECOVERED_RMS_MHZ:
+        return False
+    if float(quadratic["max_abs_residual_mhz"]) > MAX_RECOVERED_ABS_RESIDUAL_MHZ:
+        return False
+    spacing = fit.get("spacing_quality", {})
+    return bool(spacing.get("spacing_ok", False))
+
+
+def recover_candidate_from_seed(
+    name: str,
+    seed_row: dict[str, float],
+    candidate_rows: list[dict[str, float]],
+    *,
+    reference_fsr_mhz: float,
+    tolerance_mhz: float,
+    iterations: int,
+) -> tuple[list[dict[str, float]], dict[str, object]] | None:
+    offset_mhz = -float(seed_row["folded_freq_ref_mhz"])
+    centered_all = [add_centered_coordinates(row, reference_fsr_mhz, offset_mhz) for row in candidate_rows]
+    initial_window_mhz = max(tolerance_mhz * 2.0, reference_fsr_mhz * RECOVERY_INITIAL_WINDOW_FRACTION)
+
+    zero_params = np.array([0.0, 0.0, 0.0], dtype=float)
+    selected = select_closest_per_mode(
+        centered_all,
+        reference_fsr_mhz=reference_fsr_mhz,
+        fit_params=zero_params,
+        tolerance_mhz=initial_window_mhz,
+    )
+    if len(selected) < MIN_RECOVERED_FAMILY_POINTS:
+        return None
+
+    try:
+        fit = fit_family_centered(name, selected, reference_fsr_mhz)
+        for _ in range(max(1, iterations)):
+            quadratic = fit.get("quadratic")
+            if not quadratic:
+                return None
+            params = np.array(
+                [
+                    float(quadratic["offset_mhz"]),
+                    float(quadratic["d1_correction_mhz"]),
+                    float(quadratic["d2_mhz_per_mode2"]),
+                ],
+                dtype=float,
+            )
+            selected = select_closest_per_mode(
+                centered_all,
+                reference_fsr_mhz=reference_fsr_mhz,
+                fit_params=params,
+                tolerance_mhz=tolerance_mhz,
+            )
+            if len(selected) < MIN_RECOVERED_FAMILY_POINTS:
+                return None
+            fit = fit_family_centered(name, selected, reference_fsr_mhz)
+    except (RuntimeError, ValueError, TypeError):
+        return None
+
+    if not fit_is_recovered_family_candidate(fit, selected):
+        return None
+    fit["auto_center_mode"] = "residual_gui_style_offset_search"
+    fit["seed_sample_index"] = sample_index(seed_row)
+    fit["seed_wavelength_nm"] = float(seed_row["wavelength_nm_linear"])
+    fit["auto_center_tolerance_mhz"] = tolerance_mhz
+    return selected, fit
+
+
+def candidate_sort_key(candidate: tuple[list[dict[str, float]], dict[str, object]]) -> tuple[float, float, int]:
+    rows, fit = candidate
+    quadratic = fit["quadratic"]
+    spacing = fit["spacing_quality"]
+    return (
+        float(quadratic["rms_residual_mhz"]),
+        float(spacing["rms_spacing_error_mhz"]),
+        -len(rows),
+    )
+
+
+def candidate_overlap_fraction(rows_a: list[dict[str, float]], rows_b: list[dict[str, float]]) -> float:
+    samples_a = family_sample_indices(rows_a)
+    samples_b = family_sample_indices(rows_b)
+    if not samples_a or not samples_b:
+        return 0.0
+    return len(samples_a & samples_b) / min(len(samples_a), len(samples_b))
+
+
+def recover_residual_centered_families(
+    all_rows: list[dict[str, float]],
+    families: dict[str, list[dict[str, float]]],
+    *,
+    reference_fsr_mhz: float,
+    tolerance_mhz: float,
+    iterations: int,
+) -> tuple[dict[str, list[dict[str, float]]], list[dict[str, object]]]:
+    available_keys = [key for key in FAMILY_KEYS if len(families.get(key, [])) < MIN_RECOVERED_FAMILY_POINTS]
+    if not available_keys:
+        return families, []
+
+    assigned = set().union(*(family_sample_indices(rows) for rows in families.values()))
+    residual_rows = [row for row in all_rows if sample_index(row) not in assigned]
+    if len(residual_rows) < MIN_RECOVERED_FAMILY_POINTS:
+        return families, []
+
+    candidates: list[tuple[list[dict[str, float]], dict[str, object]]] = []
+    seed_rows = sorted(residual_rows, key=lambda row: -float(row["depth_1_minus_norm"]))
+    for seed_index, seed_row in enumerate(seed_rows):
+        candidate = recover_candidate_from_seed(
+            f"recovered_{seed_index + 1}",
+            seed_row,
+            residual_rows,
+            reference_fsr_mhz=reference_fsr_mhz,
+            tolerance_mhz=tolerance_mhz,
+            iterations=iterations,
+        )
+        if candidate is None:
+            continue
+        if any(
+            candidate_overlap_fraction(candidate[0], existing_rows) >= RECOVERY_DUPLICATE_OVERLAP_FRACTION
+            for existing_rows, _existing_fit in candidates
+        ):
+            continue
+        candidates.append(candidate)
+
+    if not candidates:
+        return families, []
+
+    updated = {key: list(rows) for key, rows in families.items()}
+    recovery_log: list[dict[str, object]] = []
+    used_samples = set(assigned)
+    for key, (rows, fit) in zip(available_keys, sorted(candidates, key=candidate_sort_key)):
+        row_samples = family_sample_indices(rows)
+        if row_samples & used_samples:
+            continue
+        renamed = [dict(row) for row in rows]
+        updated[key] = renamed
+        used_samples |= row_samples
+        recovery_log.append(
+            {
+                "family": key,
+                "seed_sample_index": fit.get("seed_sample_index"),
+                "seed_wavelength_nm": fit.get("seed_wavelength_nm"),
+                "count": len(rows),
+                "mode_min": fit.get("mode_min"),
+                "mode_max": fit.get("mode_max"),
+                "auto_offset_mhz": fit.get("auto_offset_mhz"),
+                "quadratic": fit.get("quadratic"),
+                "spacing_quality": fit.get("spacing_quality"),
+            }
+        )
+        if len(recovery_log) >= len(available_keys):
+            break
+    return updated, recovery_log
+
+
+def find_gui_offset_candidates(
+    rows: list[dict[str, float]],
+    *,
+    reference_fsr_mhz: float,
+    tolerance_mhz: float,
+    iterations: int,
+) -> list[tuple[list[dict[str, float]], dict[str, object]]]:
+    candidates: list[tuple[list[dict[str, float]], dict[str, object]]] = []
+    seed_rows = sorted(rows, key=lambda row: -float(row["depth_1_minus_norm"]))
+    for seed_index, seed_row in enumerate(seed_rows):
+        candidate = recover_candidate_from_seed(
+            f"global_recovered_{seed_index + 1}",
+            seed_row,
+            rows,
+            reference_fsr_mhz=reference_fsr_mhz,
+            tolerance_mhz=tolerance_mhz,
+            iterations=iterations,
+        )
+        if candidate is None:
+            continue
+        if any(
+            candidate_overlap_fraction(candidate[0], existing_rows) >= RECOVERY_DUPLICATE_OVERLAP_FRACTION
+            for existing_rows, _existing_fit in candidates
+        ):
+            continue
+        candidates.append(candidate)
+    return sorted(candidates, key=candidate_sort_key)
+
+
+def select_nonoverlapping_gui_candidates(
+    candidates: list[tuple[list[dict[str, float]], dict[str, object]]],
+    *,
+    max_family_count: int,
+) -> list[tuple[list[dict[str, float]], dict[str, object]]]:
+    selected: list[tuple[list[dict[str, float]], dict[str, object]]] = []
+    used_samples: set[int] = set()
+    for rows, fit in candidates:
+        row_samples = family_sample_indices(rows)
+        if row_samples & used_samples:
+            continue
+        selected.append((rows, fit))
+        used_samples |= row_samples
+        if len(selected) >= max_family_count:
+            break
+    return selected
+
+
+def centered_family_quality_score(families: dict[str, list[dict[str, float]]], reference_fsr_mhz: float) -> tuple[int, int, int, float]:
+    good_family_count = 0
+    total_points = 0
+    bad_gap_count = 0
+    rms_sum = 0.0
+    for family, rows in families.items():
+        if len(rows) < MIN_RECOVERED_FAMILY_POINTS:
+            continue
+        fit = fit_family_centered(family, rows, reference_fsr_mhz)
+        quadratic = fit.get("quadratic")
+        spacing = fit.get("spacing_quality", {})
+        if not quadratic:
+            continue
+        total_points += len(rows)
+        rms_sum += float(quadratic["rms_residual_mhz"])
+        if bool(spacing.get("spacing_ok", False)):
+            good_family_count += 1
+        else:
+            bad_gap_count += 1
+    return good_family_count, total_points, -bad_gap_count, -rms_sum
+
+
+def recover_global_gui_offset_families(
+    rows: list[dict[str, float]],
+    families: dict[str, list[dict[str, float]]],
+    *,
+    reference_fsr_mhz: float,
+    tolerance_mhz: float,
+    iterations: int,
+) -> tuple[dict[str, list[dict[str, float]]], list[dict[str, object]]]:
+    candidates = find_gui_offset_candidates(
+        rows,
+        reference_fsr_mhz=reference_fsr_mhz,
+        tolerance_mhz=tolerance_mhz,
+        iterations=iterations,
+    )
+    selected = select_nonoverlapping_gui_candidates(candidates, max_family_count=len(FAMILY_KEYS))
+    if len(selected) < 2:
+        return families, []
+
+    candidate_families: dict[str, list[dict[str, float]]] = {key: [] for key in FAMILY_KEYS}
+    global_log: list[dict[str, object]] = []
+    for key, (candidate_rows, fit) in zip(FAMILY_KEYS, selected):
+        candidate_families[key] = [dict(row) for row in candidate_rows]
+        global_log.append(
+            {
+                "family": key,
+                "seed_sample_index": fit.get("seed_sample_index"),
+                "seed_wavelength_nm": fit.get("seed_wavelength_nm"),
+                "count": len(candidate_rows),
+                "mode_min": fit.get("mode_min"),
+                "mode_max": fit.get("mode_max"),
+                "auto_offset_mhz": fit.get("auto_offset_mhz"),
+                "quadratic": fit.get("quadratic"),
+                "spacing_quality": fit.get("spacing_quality"),
+            }
+        )
+
+    if centered_family_quality_score(candidate_families, reference_fsr_mhz) > centered_family_quality_score(
+        families,
+        reference_fsr_mhz,
+    ):
+        return candidate_families, global_log
+    return families, []
+
+
+def family_quadratic_params(fit: dict[str, object]) -> np.ndarray | None:
+    quadratic = fit.get("quadratic")
+    if not quadratic:
+        return None
+    return np.array(
+        [
+            float(quadratic["offset_mhz"]),
+            float(quadratic["d1_correction_mhz"]),
+            float(quadratic["d2_mhz_per_mode2"]),
+        ],
+        dtype=float,
+    )
+
+
+def edge_connected_candidate_blocks(
+    existing_modes: set[int],
+    candidate_modes: set[int],
+) -> list[list[int]]:
+    if not existing_modes or not candidate_modes:
+        return []
+
+    blocks: list[list[int]] = []
+    min_mode = min(existing_modes)
+    max_mode = max(existing_modes)
+
+    left: list[int] = []
+    mode = min_mode - 1
+    while mode in candidate_modes:
+        left.append(mode)
+        mode -= 1
+    if left:
+        blocks.append(sorted(left))
+
+    right: list[int] = []
+    mode = max_mode + 1
+    while mode in candidate_modes:
+        right.append(mode)
+        mode += 1
+    if right:
+        blocks.append(right)
+
+    gap_block: list[int] = []
+    for mode in range(min_mode + 1, max_mode):
+        if mode in existing_modes:
+            if gap_block:
+                blocks.append(gap_block)
+                gap_block = []
+            continue
+        if mode in candidate_modes:
+            gap_block.append(mode)
+        elif gap_block:
+            gap_block = []
+    if gap_block:
+        blocks.append(gap_block)
+
+    return blocks
+
+
+def add_common_fit_coordinates(
+    row: dict[str, float],
+    *,
+    origin_mhz: float,
+    common_d1_mhz: float,
+) -> dict[str, float]:
+    mode, folded = common_mode_and_folded(
+        float(row["relative_freq_mhz"]),
+        origin_mhz=origin_mhz,
+        common_d1_mhz=common_d1_mhz,
+    )
+    item = dict(row)
+    item["auto_offset_mhz"] = 0.0
+    item["mode_number_centered"] = mode
+    item["folded_freq_centered_mhz"] = folded
+    item["auto_coordinate_system"] = "common_coordinate_extension"
+    return item
+
+
+def extend_one_centered_family(
+    family: str,
+    family_rows: list[dict[str, float]],
+    all_rows: list[dict[str, float]],
+    assigned_elsewhere: set[int],
+    *,
+    reference_fsr_mhz: float,
+    tolerance_mhz: float,
+    common_origin_mhz: float,
+    common_d1_mhz: float,
+) -> tuple[list[dict[str, float]], dict[str, object] | None]:
+    if len(family_rows) < 4:
+        return family_rows, None
+
+    common_family_rows = [
+        add_common_fit_coordinates(row, origin_mhz=common_origin_mhz, common_d1_mhz=common_d1_mhz)
+        for row in family_rows
+    ]
+    try:
+        base_fit = fit_family_centered(family, common_family_rows, reference_fsr_mhz)
+    except (RuntimeError, ValueError, TypeError):
+        return family_rows, None
+
+    params = family_quadratic_params(base_fit)
+    if params is None:
+        return family_rows, None
+
+    extension_tolerance_mhz = min(
+        tolerance_mhz,
+        max(BRANCH_EXTENSION_MIN_TOLERANCE_MHZ, reference_fsr_mhz * BRANCH_EXTENSION_RESIDUAL_FRACTION),
+    )
+    existing_samples = family_sample_indices(family_rows)
+    existing_modes = {int(row["mode_number_centered"]) for row in common_family_rows}
+    by_mode: dict[int, tuple[tuple[float, float], dict[str, float]]] = {}
+
+    for row in all_rows:
+        row_sample = sample_index(row)
+        if row_sample in existing_samples or row_sample in assigned_elsewhere:
+            continue
+        if float(row["depth_1_minus_norm"]) < BRANCH_EXTENSION_MIN_DEPTH:
+            continue
+        centered = add_common_fit_coordinates(row, origin_mhz=common_origin_mhz, common_d1_mhz=common_d1_mhz)
+        mode = int(centered["mode_number_centered"])
+        if mode in existing_modes:
+            continue
+        predicted = poly2(np.array([mode], dtype=float), *params)[0]
+        residual = float(wrap_frequency(centered["folded_freq_centered_mhz"] - predicted, reference_fsr_mhz))
+        if abs(residual) > extension_tolerance_mhz:
+            continue
+        candidate = dict(centered)
+        candidate["auto_residual_mhz"] = residual
+        score = (abs(residual), -float(candidate["depth_1_minus_norm"]))
+        if mode not in by_mode or score < by_mode[mode][0]:
+            by_mode[mode] = (score, candidate)
+
+    candidate_blocks = edge_connected_candidate_blocks(existing_modes, set(by_mode))
+    if not candidate_blocks:
+        return family_rows, None
+
+    base_quadratic = base_fit.get("quadratic", {})
+    base_rms = float(base_quadratic.get("rms_residual_mhz", MAX_RECOVERED_RMS_MHZ))
+    base_abs = float(base_quadratic.get("max_abs_residual_mhz", MAX_RECOVERED_ABS_RESIDUAL_MHZ))
+    rms_limit = max(MAX_RECOVERED_RMS_MHZ, base_rms * BRANCH_EXTENSION_RMS_GROWTH_LIMIT)
+    abs_limit = max(
+        MAX_RECOVERED_ABS_RESIDUAL_MHZ,
+        base_abs * BRANCH_EXTENSION_RMS_GROWTH_LIMIT,
+        reference_fsr_mhz * BRANCH_EXTENSION_ABS_RESIDUAL_FRACTION,
+    )
+
+    accepted: list[tuple[tuple[int, float], list[dict[str, float]], dict[str, object], list[dict[str, float]]]] = []
+    for block in candidate_blocks:
+        additions = [by_mode[mode][1] for mode in block]
+        trial_rows = sorted(
+            [dict(row) for row in common_family_rows] + additions,
+            key=lambda row: int(row["mode_number_centered"]),
+        )
+        try:
+            trial_fit = fit_family_centered(family, trial_rows, reference_fsr_mhz)
+        except (RuntimeError, ValueError, TypeError):
+            continue
+
+        quadratic = trial_fit.get("quadratic")
+        spacing = trial_fit.get("spacing_quality", {})
+        if not quadratic or not bool(spacing.get("spacing_ok", False)):
+            continue
+        if float(quadratic["rms_residual_mhz"]) > rms_limit:
+            continue
+        if float(quadratic["max_abs_residual_mhz"]) > abs_limit:
+            continue
+        accepted.append(((-len(additions), float(quadratic["rms_residual_mhz"])), trial_rows, trial_fit, additions))
+
+    if not accepted:
+        return family_rows, None
+
+    _score, trial_rows, trial_fit, additions = sorted(accepted, key=lambda item: item[0])[0]
+    quadratic = trial_fit["quadratic"]
+    spacing = trial_fit["spacing_quality"]
+    return trial_rows, {
+        "family": family,
+        "added_count": len(additions),
+        "added_modes": [int(row["mode_number_centered"]) for row in additions],
+        "added_wavelength_nm": [float(row["wavelength_nm_linear"]) for row in additions],
+        "added_residual_mhz": [float(row.get("auto_residual_mhz", math.nan)) for row in additions],
+        "tolerance_mhz": extension_tolerance_mhz,
+        "before_count": len(family_rows),
+        "after_count": len(trial_rows),
+        "coordinate_system": "common_coordinate_extension",
+        "common_d1_mhz": common_d1_mhz,
+        "before_quadratic": base_fit.get("quadratic"),
+        "after_quadratic": quadratic,
+        "spacing_quality": spacing,
+    }
+
+
+def extend_centered_family_branches(
+    all_rows: list[dict[str, float]],
+    families: dict[str, list[dict[str, float]]],
+    *,
+    reference_fsr_mhz: float,
+    tolerance_mhz: float,
+    iterations: int,
+) -> tuple[dict[str, list[dict[str, float]]], list[dict[str, object]]]:
+    updated = {key: [dict(row) for row in rows] for key, rows in families.items()}
+    extension_log: list[dict[str, object]] = []
+    fit_candidates = [
+        fit_family_centered(name, family_rows, reference_fsr_mhz)
+        for name, family_rows in updated.items()
+        if family_rows
+    ]
+    origin = choose_common_origin(updated, fit_candidates)
+    if origin is None:
+        return updated, extension_log
+    _origin_name, origin_row, common_d1_mhz = origin
+    common_origin_mhz = float(origin_row["relative_freq_mhz"])
+    for _ in range(max(1, iterations)):
+        changed = False
+        for family in FAMILY_KEYS:
+            family_rows = updated.get(family, [])
+            if not family_rows:
+                continue
+            assigned_elsewhere = set().union(
+                *(
+                    family_sample_indices(rows)
+                    for key, rows in updated.items()
+                    if key != family
+                )
+            )
+            extended_rows, log_entry = extend_one_centered_family(
+                family,
+                family_rows,
+                all_rows,
+                assigned_elsewhere,
+                reference_fsr_mhz=reference_fsr_mhz,
+                tolerance_mhz=tolerance_mhz,
+                common_origin_mhz=common_origin_mhz,
+                common_d1_mhz=common_d1_mhz,
+            )
+            if log_entry is None:
+                continue
+            updated[family] = extended_rows
+            extension_log.append(log_entry)
+            changed = True
+        if not changed:
+            break
+    return updated, extension_log
 
 
 def write_family_points(path: Path, families: dict[str, list[dict[str, float]]]) -> None:
@@ -828,6 +1569,27 @@ def find_large_scan_data_path(dip_table: Path, stem: str) -> Path | None:
         candidate = dip_table.with_name(f"{stem}{suffix}")
         if candidate.exists():
             return candidate
+    for name in ("raw.npz", "raw.csv"):
+        candidate = dip_table.with_name(name)
+        if candidate.exists():
+            return candidate
+    if dip_table.name == "dip_table.csv":
+        evidence_dir = dip_table.parent
+        if evidence_dir.parent.name == "evidence":
+            q_dir = evidence_dir.parent.parent
+            for name in ("raw.npz", "raw.csv"):
+                candidate = q_dir / name
+                if candidate.exists():
+                    return candidate
+        summary_path = evidence_dir / "process_summary.json"
+        if summary_path.exists():
+            try:
+                summary = json.loads(summary_path.read_text(encoding="utf-8"))
+                configured_path = Path(str(summary.get("config", {}).get("data_path", "")))
+                if configured_path.exists():
+                    return configured_path
+            except json.JSONDecodeError:
+                pass
     return None
 
 
@@ -883,6 +1645,43 @@ def assigned_labels_by_sample(families: dict[str, list[dict[str, float]]]) -> di
     return assigned
 
 
+def representative_side_panel_rows(
+    common_rows: list[dict[str, float]],
+    assigned_by_sample: dict[int, tuple[str, dict[str, float]]],
+) -> tuple[int, list[dict[str, float]], set[str], set[str]]:
+    target_labels = {label for label, _row in assigned_by_sample.values()}
+    if not common_rows:
+        return 0, [], target_labels, set()
+    available_modes = sorted({int(row["common_mode_number"]) for row in common_rows})
+    mode_order = [0]
+    max_abs_mode = max(abs(mode) for mode in available_modes)
+    for index in range(1, max_abs_mode + 1):
+        mode_order.extend([index, -index])
+    mode_order.extend(mode for mode in available_modes if mode not in mode_order)
+
+    best_mode = mode_order[0]
+    best_rows: list[dict[str, float]] = []
+    best_labels: set[str] = set()
+    for mode in mode_order:
+        side_rows = [row for row in common_rows if int(row["common_mode_number"]) == mode]
+        labels = {
+            assigned_by_sample[int(float(row["sample_index"]))][0]
+            for row in side_rows
+            if int(float(row["sample_index"])) in assigned_by_sample
+        }
+        if not best_rows or len(labels) > len(best_labels) or (
+            len(labels) == len(best_labels) and abs(mode) < abs(best_mode)
+        ):
+            best_mode = mode
+            best_rows = side_rows
+            best_labels = labels
+        if target_labels and target_labels.issubset(labels):
+            break
+
+    sorted_rows = sorted(best_rows, key=lambda item: float(item["common_folded_mhz"]))
+    return best_mode, sorted_rows, target_labels, best_labels
+
+
 def draw_mu0_side_panel(
     side: plt.Axes,
     *,
@@ -892,9 +1691,9 @@ def draw_mu0_side_panel(
     assigned_by_sample: dict[int, tuple[str, dict[str, float]]],
     common_d1_mhz: float,
 ) -> None:
-    side_rows = sorted(
-        [row for row in common_rows if int(row["common_mode_number"]) == 0],
-        key=lambda item: float(item["common_folded_mhz"]),
+    selected_mode, side_rows, target_labels, plotted_labels = representative_side_panel_rows(
+        common_rows,
+        assigned_by_sample,
     )
     data_path = find_large_scan_data_path(dip_table, stem)
     plotted_trace = False
@@ -959,7 +1758,11 @@ def draw_mu0_side_panel(
 
     side.axhline(0.0, color="black", lw=1.0)
     side.set_xlabel("Normalized CH2" if plotted_trace else "1 - depth", fontsize=13)
-    side.set_title("mu=0 one FSR", fontsize=14)
+    title = f"m={selected_mode:+d} one FSR"
+    if target_labels and not target_labels.issubset(plotted_labels):
+        missing = ",".join(sorted(target_labels - plotted_labels))
+        title += f"\nmissing {missing}"
+    side.set_title(title, fontsize=14)
     side.set_xlim(1.05, -0.05)
     side.grid(alpha=0.22)
 
@@ -1055,7 +1858,7 @@ def plot_common_fits_with_side_panel(
     ax.set_xlabel(f"Mode number, common origin = {origin_label} M=0", fontsize=16)
     ax.set_ylabel("Folded frequency, common coordinates (GHz)", fontsize=16)
     ax.set_title(
-        f"Common-coordinate dispersion map with mu=0 one-FSR panel; D1={common_d1_mhz/1000:.6g} GHz",
+        f"Common-coordinate dispersion map with representative one-FSR panel; D1={common_d1_mhz/1000:.6g} GHz",
         fontsize=17,
     )
     ax.grid(alpha=0.22)
@@ -1154,10 +1957,15 @@ def plot_auto_centered_fits(
 def parse_args(argv: Iterable[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("dip_table", nargs="?", default=None)
-    parser.add_argument("--chip", default="chip7")
+    parser.add_argument(
+        "--campaign",
+        default=default_campaign(),
+        help=f"Campaign path under ${DATA_ROOT_ENV}/experiments. Defaults to ${CAMPAIGN_ENV} or wafer_measuement/Batch_260515.",
+    )
+    parser.add_argument("--chip", default=default_chip(), help=f"Chip/sample id. Defaults to ${CHIP_ENV} or chip7.")
     parser.add_argument("--die", default="die1-1")
     parser.add_argument("--cavity", default="c1")
-    parser.add_argument("--depth-threshold", type=float, default=0.2)
+    parser.add_argument("--depth-threshold", type=float, default=0.4)
     parser.add_argument(
         "--reference-fsr-mhz",
         type=float,
@@ -1179,7 +1987,7 @@ def main(argv: Iterable[str]) -> int:
     if args.dip_table:
         dip_table = Path(args.dip_table)
     else:
-        result_dir = default_cavity_dir(args.chip, args.die, args.cavity)
+        result_dir = default_cavity_dir(args.chip, args.die, args.cavity, campaign=args.campaign)
         candidates = list(result_dir.glob("large_scan_*_dip_table.csv"))
         if not candidates:
             raise SystemExit(f"No dip table found in {result_dir}")
@@ -1190,6 +1998,9 @@ def main(argv: Iterable[str]) -> int:
     if args.reference_fsr_mhz is not None:
         reference_fsr_mhz = float(args.reference_fsr_mhz)
         reference_fsr_source = "cli"
+    elif (process_fsr_mhz := process_summary_fsr_mhz(dip_table, output_dir, stem)) is not None:
+        reference_fsr_mhz = process_fsr_mhz
+        reference_fsr_source = "process_summary"
     elif args.chip.lower() == "chip7":
         reference_fsr_mhz = expected_chip7_fsr_mhz(args.die)
         reference_fsr_source = f"chip7_design_ng2_radius_for_{args.die}"
@@ -1215,6 +2026,32 @@ def main(argv: Iterable[str]) -> int:
         tolerance_mhz=args.auto_center_tolerance_mhz,
         iterations=args.auto_center_iterations,
     )
+    auto_families, outlier_prune_log = prune_auto_centered_family_outliers(
+        auto_families,
+        reference_fsr_mhz=reference_fsr_mhz,
+    )
+    auto_families, residual_recovery_log = recover_residual_centered_families(
+        rows,
+        auto_families,
+        reference_fsr_mhz=reference_fsr_mhz,
+        tolerance_mhz=args.auto_center_tolerance_mhz,
+        iterations=args.auto_center_iterations,
+    )
+    auto_families, global_gui_recovery_log = recover_global_gui_offset_families(
+        rows,
+        auto_families,
+        reference_fsr_mhz=reference_fsr_mhz,
+        tolerance_mhz=args.auto_center_tolerance_mhz,
+        iterations=args.auto_center_iterations,
+    )
+    auto_families, branch_extension_log = extend_centered_family_branches(
+        rows,
+        auto_families,
+        reference_fsr_mhz=reference_fsr_mhz,
+        tolerance_mhz=args.auto_center_tolerance_mhz,
+        iterations=args.auto_center_iterations,
+    )
+    auto_fits = [fit_family_centered(name, family_rows, reference_fsr_mhz) for name, family_rows in auto_families.items()]
 
     family_points_path = output_dir / f"{stem}_dispersion_family_points.csv"
     write_family_points(family_points_path, families)
@@ -1250,6 +2087,10 @@ def main(argv: Iterable[str]) -> int:
         "auto_centered_fit_figure": str(auto_fit_plot_path),
         "fits": fits,
         "auto_centered_fits": auto_fits,
+        "outlier_prune_log": outlier_prune_log,
+        "residual_recovery_log": residual_recovery_log,
+        "global_gui_recovery_log": global_gui_recovery_log,
+        "branch_extension_log": branch_extension_log,
     }
     summary_path = output_dir / f"{stem}_dispersion_fit_summary.json"
     summary_path.write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")

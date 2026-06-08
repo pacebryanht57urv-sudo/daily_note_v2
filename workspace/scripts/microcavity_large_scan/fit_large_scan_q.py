@@ -20,7 +20,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from scipy.optimize import curve_fit
 
-from data_paths import DATA_ROOT_ENV, default_cavity_dir
+from data_paths import CAMPAIGN_ENV, CHIP_ENV, DATA_ROOT_ENV, default_campaign, default_chip, default_cavity_dir
 from process_large_scan import normalize_transmission_with_baseline, read_large_scan_data
 
 C_M_PER_S = 299_792_458.0
@@ -541,10 +541,15 @@ def parse_args(argv: Iterable[str]) -> argparse.Namespace:
     parser.add_argument("--data-path", default=None)
     parser.add_argument("--csv-path", default=None)
     parser.add_argument("--family-points-csv", default=None)
-    parser.add_argument("--chip", default="chip7")
+    parser.add_argument(
+        "--campaign",
+        default=default_campaign(),
+        help=f"Campaign path under ${DATA_ROOT_ENV}/experiments. Defaults to ${CAMPAIGN_ENV} or wafer_measuement/Batch_260515.",
+    )
+    parser.add_argument("--chip", default=default_chip(), help=f"Chip/sample id. Defaults to ${CHIP_ENV} or chip7.")
     parser.add_argument("--die", default="die1-1")
     parser.add_argument("--cavity", default="c1")
-    parser.add_argument("--depth-threshold", type=float, default=0.2)
+    parser.add_argument("--depth-threshold", type=float, default=0.4)
     parser.add_argument("--start-nm", type=float, default=1530.0)
     parser.add_argument("--center-nm", type=float, default=1550.0)
     parser.add_argument("--stop-nm", type=float, default=1570.0)
@@ -566,7 +571,7 @@ def main(argv: Iterable[str]) -> int:
     if args.data_path or args.csv_path:
         data_path = Path(args.data_path or args.csv_path)
     else:
-        result_dir = default_cavity_dir(args.chip, args.die, args.cavity)
+        result_dir = default_cavity_dir(args.chip, args.die, args.cavity, campaign=args.campaign)
         candidates = list(result_dir.glob("large_scan_*_1530-1570nm.npz")) + list(result_dir.glob("large_scan_*_1530-1570nm.csv"))
         if not candidates:
             raise SystemExit(f"No large-scan data found in {result_dir}")
@@ -578,7 +583,7 @@ def main(argv: Iterable[str]) -> int:
     )
     if family_points is None:
         if result_dir is None:
-            result_dir = default_cavity_dir(args.chip, args.die, args.cavity)
+            result_dir = default_cavity_dir(args.chip, args.die, args.cavity, campaign=args.campaign)
         candidates = list(result_dir.glob("large_scan_*_dispersion_auto_centered_family_points.csv"))
         if not candidates:
             raise SystemExit(f"No auto-centered family points CSV found in {result_dir}")

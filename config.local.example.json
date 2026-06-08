@@ -12,6 +12,23 @@
   "FEISHU_MONTHLY_SUMMARY_FOLDER_TOKEN": "fldxxxxxxxxxxxxxxxx",
   "FEISHU_MONTHLY_SUMMARY_FOLDER_URL": "https://ecnrpn6ylnp0.feishu.cn/drive/folder/fldxxxxxxxxxxxxxxxx",
   "WORKSPACE_DIR": "workspace",
+  "DAILY_NOTE_DATA_ROOT": "D:/daily_note_data",
+  "DAILY_NOTE_CAMPAIGN": "wafer_measuement/Batch_260515",
+  "DAILY_NOTE_CHIP": "chip7",
+  "MICROCAVITY_LARGE_SCAN": {
+    "laser_port": "COM3",
+    "scope_resource": "TCPIP::192.168.1.8::INSTR",
+    "visa_backend": "@py",
+    "start_nm": 1530.0,
+    "stop_nm": 1570.0,
+    "speed_nm_s": 2.0,
+    "sample_rate_hz": 200000.0,
+    "record_seconds": 20.0,
+    "depth_threshold": 0.4,
+    "pc_voltage_v": 75.0,
+    "emission_off_seconds": 2.0,
+    "emission_on_settle_seconds": 2.0
+  },
   "MACHINE_NAME": "lab-pc",
   "ENABLE_FEISHU_LISTENER": true
 }

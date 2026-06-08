@@ -26,7 +26,7 @@ from scipy.ndimage import maximum_filter1d, minimum_filter1d
 from scipy.signal import savgol_filter
 
 from chip7_design import expected_chip7_fsr_mhz
-from data_paths import DATA_ROOT_ENV, default_cavity_dir
+from data_paths import CAMPAIGN_ENV, CHIP_ENV, DATA_ROOT_ENV, default_campaign, default_chip, default_cavity_dir
 
 
 @dataclass
@@ -299,6 +299,32 @@ def find_fsr_candidates(
     return candidates
 
 
+def select_full_fsr_candidate(
+    candidates: list[dict[str, float]],
+    *,
+    design_fsr_mhz: float,
+) -> dict[str, float] | None:
+    """Choose the full-FSR branch near the design value, not the higher-score half-FSR alias."""
+    if not candidates:
+        return None
+    full_fsr_candidates = [
+        item
+        for item in candidates
+        if 0.75 * design_fsr_mhz <= float(item["fsr_mhz"]) <= 1.35 * design_fsr_mhz
+    ]
+    if not full_fsr_candidates:
+        return None
+    return max(full_fsr_candidates, key=lambda item: float(item["score"]))
+
+
+def update_folded_coordinates(rows: list[dict[str, float | int]], disk_fsr_mhz: float) -> None:
+    for row in rows:
+        rel_freq = float(row["relative_freq_mhz"])
+        mode_number = int(round(rel_freq / disk_fsr_mhz))
+        row["mode_number"] = mode_number
+        row["folded_freq_mhz"] = float(rel_freq - mode_number * disk_fsr_mhz)
+
+
 def write_dip_table(path: Path, rows: list[dict[str, float | int]]) -> None:
     fieldnames = [
         "dip_id",
@@ -441,7 +467,12 @@ def plot_normalized_transmission(
 def parse_args(argv: Iterable[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("data_path", nargs="?", default=None)
-    parser.add_argument("--chip", default="chip7")
+    parser.add_argument(
+        "--campaign",
+        default=default_campaign(),
+        help=f"Campaign path under ${DATA_ROOT_ENV}/experiments. Defaults to ${CAMPAIGN_ENV} or wafer_measuement/Batch_260515.",
+    )
+    parser.add_argument("--chip", default=default_chip(), help=f"Chip/sample id. Defaults to ${CHIP_ENV} or chip7.")
     parser.add_argument("--die", default="die1-1")
     parser.add_argument("--cavity", default="c1")
     parser.add_argument("--start-nm", type=float, default=1530.0)
@@ -476,7 +507,7 @@ def main(argv: Iterable[str]) -> int:
     if args.data_path:
         data_path = Path(args.data_path)
     else:
-        result_dir = default_cavity_dir(args.chip, args.die, args.cavity)
+        result_dir = default_cavity_dir(args.chip, args.die, args.cavity, campaign=args.campaign)
         candidates = list(result_dir.glob("large_scan_*_1530-1570nm.npz")) + list(result_dir.glob("large_scan_*_1530-1570nm.csv"))
         if not candidates:
             raise SystemExit(f"No large-scan data found in {result_dir}")
@@ -489,34 +520,12 @@ def main(argv: Iterable[str]) -> int:
         disk_fsr_source = "cli"
     elif args.chip.lower() == "chip7":
         disk_fsr_mhz = expected_chip7_fsr_mhz(args.die)
-        disk_fsr_source = f"chip7_design_ng2_radius_for_{args.die}"
+        disk_fsr_source = f"chip7_design_initial_ng2_radius_for_{args.die}"
     else:
         raise SystemExit("Pass --disk-fsr-mhz for non-chip7 data; no safe default is available.")
 
     fsr_scan_min_mhz = float(args.fsr_scan_min_mhz) if args.fsr_scan_min_mhz is not None else max(20_000.0, 0.20 * disk_fsr_mhz)
     fsr_scan_max_mhz = float(args.fsr_scan_max_mhz) if args.fsr_scan_max_mhz is not None else 1.20 * disk_fsr_mhz
-
-    config = ProcessConfig(
-        data_path=str(data_path),
-        start_nm=args.start_nm,
-        center_nm=args.center_nm,
-        stop_nm=args.stop_nm,
-        mzi_d1_mhz=args.mzi_d1_mhz,
-        mzi_d2_mhz=args.mzi_d2_mhz,
-        mzi_d3_mhz=args.mzi_d3_mhz,
-        disk_fsr_mhz=disk_fsr_mhz,
-        disk_fsr_source=disk_fsr_source,
-        offset_mhz=args.offset_mhz,
-        peak_sensitivity_db=args.peak_sensitivity_db,
-        mzi_sensitivity_db=args.mzi_sensitivity_db,
-        nominal_width_samples=args.nominal_width_samples,
-        fsr_scan_min_mhz=fsr_scan_min_mhz,
-        fsr_scan_max_mhz=fsr_scan_max_mhz,
-        fsr_scan_step_mhz=args.fsr_scan_step_mhz,
-        output_dir=str(output_dir),
-    )
-
-    print(json.dumps(asdict(config), indent=2, ensure_ascii=False))
     time_s, _trigger, trans_raw, mzi_raw = read_large_scan_data(data_path)
     mzi_index = find_mzi_index(mzi_raw, args.mzi_sensitivity_db)
     dip_idx, dip_norm, trans_norm, baseline = find_transmission_dips(
@@ -527,6 +536,7 @@ def main(argv: Iterable[str]) -> int:
     )
     mzi_mu = map_dips_to_mzi_mu(dip_idx, mzi_index)
     rows: list[dict[str, float | int]] = []
+    selected_fsr = None
     if len(dip_idx) and len(mzi_mu):
         rel_freq, mu_center = relative_frequency_mhz(
             mzi_mu,
@@ -564,10 +574,37 @@ def main(argv: Iterable[str]) -> int:
             max_mhz=fsr_scan_max_mhz,
             step_mhz=args.fsr_scan_step_mhz,
         )
+        if args.disk_fsr_mhz is None:
+            selected_fsr = select_full_fsr_candidate(fsr_candidates, design_fsr_mhz=disk_fsr_mhz)
+            if selected_fsr is not None:
+                disk_fsr_mhz = float(selected_fsr["fsr_mhz"])
+                disk_fsr_source = "auto_full_fsr_candidate"
+                update_folded_coordinates(rows, disk_fsr_mhz)
     else:
         mu_center = float("nan")
         fsr_candidates = []
 
+    config = ProcessConfig(
+        data_path=str(data_path),
+        start_nm=args.start_nm,
+        center_nm=args.center_nm,
+        stop_nm=args.stop_nm,
+        mzi_d1_mhz=args.mzi_d1_mhz,
+        mzi_d2_mhz=args.mzi_d2_mhz,
+        mzi_d3_mhz=args.mzi_d3_mhz,
+        disk_fsr_mhz=disk_fsr_mhz,
+        disk_fsr_source=disk_fsr_source,
+        offset_mhz=args.offset_mhz,
+        peak_sensitivity_db=args.peak_sensitivity_db,
+        mzi_sensitivity_db=args.mzi_sensitivity_db,
+        nominal_width_samples=args.nominal_width_samples,
+        fsr_scan_min_mhz=fsr_scan_min_mhz,
+        fsr_scan_max_mhz=fsr_scan_max_mhz,
+        fsr_scan_step_mhz=args.fsr_scan_step_mhz,
+        output_dir=str(output_dir),
+    )
+
+    print(json.dumps(asdict(config), indent=2, ensure_ascii=False))
     table_path = output_dir / f"{stem}_dip_table.csv"
     write_dip_table(table_path, rows)
     raw_fig, folded_fig = plot_results(
@@ -596,6 +633,7 @@ def main(argv: Iterable[str]) -> int:
         "dip_count": int(len(rows)),
         "mu_center": mu_center,
         "fsr_candidates": fsr_candidates,
+        "selected_fsr_candidate": selected_fsr,
         "dip_table": str(table_path),
         "raw_ch2_ch3_figure": str(raw_fig),
         "flattened_ch2_figure": str(flattened_fig),
