@@ -26,6 +26,8 @@ __pycache__/
 /workspace/users/*/notes/
 /.codex-remote-attachments/
 /tmp/
+/.SynologyWorkingDirectory/
+/weekly_report/
 
 # Code/workflow directories stay versioned
 !/workspace/scripts/
@@ -54,4 +56,5 @@ __pycache__/
 # OS/editor noise
 .DS_Store
 Thumbs.db
+desktop.ini
 *.swp
