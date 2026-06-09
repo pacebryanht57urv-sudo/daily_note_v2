@@ -54,6 +54,15 @@ def parse_args(argv: Iterable[str]) -> argparse.Namespace:
     parser.add_argument("--radius-um", type=float, default=None, help="Cavity radius for cards without a built-in design helper.")
     parser.add_argument("--gap-um", type=float, default=None, help="Coupling gap for cards without a built-in design helper.")
     parser.add_argument("--throughput", default=None, help="Displayed throughput text. Defaults to the existing card value.")
+    parser.add_argument("--output-power-uw", type=float, default=None, help="Measured out-coupled power in uW.")
+    parser.add_argument("--input-monitor-power-uw", type=float, default=1.0, help="Input-side monitor power in uW.")
+    parser.add_argument("--input-monitor-fraction", type=float, default=0.01, help="Fractional input monitor tap, e.g. 0.01 for 1%%.")
+    parser.add_argument(
+        "--loss-mode",
+        choices=("single-ended", "total"),
+        default="single-ended",
+        help="Insertion-loss display convention when --output-power-uw is provided.",
+    )
     parser.add_argument("--sensitivity", default=None, help="Displayed sensitivity text. Defaults to existing card value or pending.")
     parser.add_argument("--note", default=None, help="Short analysis note. Auto-generated when omitted.")
     parser.add_argument("--skip-reason", default=None, help="Write a skipped/not-measured card with this reason.")
@@ -65,6 +74,39 @@ def text_or_pending(value: str | None) -> str:
     if value is None or not value.strip():
         return "pending"
     return value.strip()
+
+
+def throughput_from_power_text(
+    output_power_uw: float | None,
+    input_monitor_power_uw: float,
+    input_monitor_fraction: float,
+    loss_mode: str,
+) -> str | None:
+    if output_power_uw is None:
+        return None
+    if input_monitor_power_uw <= 0:
+        raise ValueError("--input-monitor-power-uw must be positive")
+    if input_monitor_fraction <= 0:
+        raise ValueError("--input-monitor-fraction must be positive")
+    if output_power_uw < 0:
+        raise ValueError("--output-power-uw cannot be negative")
+
+    input_power_uw = input_monitor_power_uw / input_monitor_fraction
+    throughput = output_power_uw / input_power_uw
+    throughput_pct = throughput * 100.0
+    if throughput > 0:
+        if loss_mode == "single-ended":
+            loss_db = -10.0 * math.log10(math.sqrt(throughput))
+            loss_text = f"single-ended {loss_db:.2f} dB"
+        else:
+            loss_db = -10.0 * math.log10(throughput)
+            loss_text = f"total {loss_db:.2f} dB"
+    else:
+        loss_text = "loss undefined at zero output"
+    return (
+        f"Pout {output_power_uw:g} uW; total throughput {throughput_pct:.3g}% "
+        f"({input_power_uw:g} uW input); {loss_text}"
+    )
 
 
 def existing_cell(card_text: str, label: str) -> str | None:
@@ -274,7 +316,9 @@ def sensitivity_panel(cavity_dir: Path) -> str:
     return '<div class="placeholder">pending<br>sensitivity figure</div>'
 
 
-def q_trend_panel(q_dir: Path) -> str:
+def q_trend_panel(q_dir: Path, force_pending: bool = False) -> str:
+    if force_pending:
+        return '<div class="placeholder">pending<br>Q trend</div>'
     if (q_dir / "q_trend.png").exists():
         return '<img class="plot" src="Q/q_trend.png" alt="Q trend">'
     return '<div class="placeholder">pending<br>Q trend</div>'
@@ -299,7 +343,13 @@ def write_card(args: argparse.Namespace) -> Path:
     q_dir = cavity_dir / "Q"
     card_path = cavity_dir / "cavity_card.html"
     existing = card_path.read_text(encoding="utf-8") if card_path.exists() else ""
-    throughput = text_or_pending(args.throughput or existing_cell(existing, "throughput"))
+    power_throughput = throughput_from_power_text(
+        args.output_power_uw,
+        args.input_monitor_power_uw,
+        args.input_monitor_fraction,
+        args.loss_mode,
+    )
+    throughput = text_or_pending(args.throughput or power_throughput or existing_cell(existing, "throughput"))
     sensitivity = text_or_pending(args.sensitivity or existing_cell(existing, "sensitivity"))
     radius_um, gap_um = design_values(args.chip, args.die, args.cavity, args.radius_um, args.gap_um)
     photo = find_photo(results_root, args.chip, args.die, args.cavity, existing, args.photo)
@@ -308,10 +358,12 @@ def write_card(args: argparse.Namespace) -> Path:
         mode_rows = '<tr><td colspan="5">not measured</td></tr>'
         run_text = "not measured"
         note = args.skip_reason
+        q_panel = q_trend_panel(q_dir, force_pending=True)
     else:
         mode_rows = mode_rows_html(q_dir, radius_um)
         run_text = acquisition_run_text(q_dir)
         note = args.note or auto_note(q_dir)
+        q_panel = q_trend_panel(q_dir)
 
     photo_html = (
         f'<img class="film" src="{html.escape(photo)}" alt="{html.escape(args.chip)} {html.escape(args.die)} {html.escape(args.cavity)} film">'
@@ -350,7 +402,7 @@ def write_card(args: argparse.Namespace) -> Path:
   </section>
   <section class="panel">
     <div class="plot-title">Q trend</div>
-    {q_trend_panel(q_dir)}
+    {q_panel}
   </section>
   <section class="panel">
     <div class="plot-title">sensitivity</div>

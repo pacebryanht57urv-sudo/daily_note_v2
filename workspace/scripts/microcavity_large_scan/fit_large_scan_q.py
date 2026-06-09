@@ -164,6 +164,7 @@ def fit_one_mode(
     ql = f0_mhz / kappa_total_mhz if kappa_total_mhz > 0 else math.nan
     return {
         "family": row["family"],
+        "family_label": row.get("family_label", row["family"]),
         "mode_number": int(row.get("mode_number_centered", row.get("mode_number_ref", math.nan))),
         "sample_index": center_idx,
         "time_s": float(time_s[center_idx]),
@@ -192,6 +193,7 @@ def failed_fit_row(row: dict[str, float | str], time_s: np.ndarray, exc: Excepti
     center_idx = int(round(float(row["sample_index"])))
     return {
         "family": row["family"],
+        "family_label": row.get("family_label", row["family"]),
         "mode_number": int(row.get("mode_number_centered", row.get("mode_number_ref", -999))),
         "sample_index": center_idx,
         "time_s": float(time_s[center_idx]),
@@ -248,6 +250,7 @@ def fit_modes(
 def write_q_table(path: Path, rows: list[dict[str, float | str]]) -> None:
     fields = [
         "family",
+        "family_label",
         "mode_number",
         "sample_index",
         "time_s",
@@ -340,6 +343,13 @@ DISPLAY_COLORS = {
 
 def display_labels_by_depth(rows: list[dict[str, float | str]]) -> dict[str, str]:
     """Map internal family keys to depth-ordered mode labels for human-facing plots."""
+    explicit = {
+        str(row["family"]): str(row["family_label"])
+        for row in rows
+        if row.get("family") and row.get("family_label") and str(row.get("family_label")) != str(row.get("family"))
+    }
+    if explicit:
+        return explicit
     sequence_transmission: dict[tuple[int, ...], float] = {}
     sequence_families: dict[tuple[int, ...], list[str]] = {}
     for family in sorted({str(row["family"]) for row in rows}):
@@ -522,7 +532,7 @@ def plot_local_dip_mosaic(
             order = np.argsort(x)
             ax.plot(x[order], y[order], lw=0.7, color=color)
             ax.axvline(0.0, color="#999999", lw=0.6, alpha=0.7)
-            ax.set_title(f"{float(qrow['wavelength_nm']):.2f} nm", fontsize=10)
+            ax.set_title(f"{label} m={int(qrow['mode_number'])}\n{float(qrow['wavelength_nm']):.2f} nm", fontsize=10)
             ax.tick_params(axis="both", labelsize=8)
             ax.grid(True, alpha=0.18)
             if c == 0:
@@ -646,6 +656,7 @@ def main(argv: Iterable[str]) -> int:
         if not fam:
             continue
         summary["family_summary"][family] = {
+            "family_label": str(fam[0].get("family_label", family)),
             "count": len(fam),
             "Q0_median_M": float(np.nanmedian([float(row["Q0"]) for row in fam]) / 1e6),
             "Q1_median_M": float(np.nanmedian([float(row["Q1"]) for row in fam]) / 1e6),
