@@ -34,6 +34,63 @@
 
 仓库默认忽略 `workspace/experiments/`、`workspace/reports/`、`workspace/notes/`、`workspace/literature/` 和 `workspace/data/`。这些目录可以作为本机临时工作区或群晖同步挂载点使用，但不作为 Git 资产。
 
+## New Student Experiment Folder Quickstart
+
+新同学第一次 pull 后，先让自己的 Codex 明确两件事：
+
+1. 代码仓库路径只是 workflow 入口，例如 `D:\daily_note_v2`。
+2. 实验记录、图片、结果和原始数据必须放在 `DAILY_NOTE_DATA_ROOT` 指向的外部数据根，不放进 Git 仓库。
+
+如果还没有设置数据根，先在 PowerShell 中设置用户级环境变量，例如：
+
+```powershell
+[Environment]::SetEnvironmentVariable("DAILY_NOTE_DATA_ROOT", "Z:\daily_note_data", "User")
+```
+
+新开一个终端后检查：
+
+```powershell
+echo $env:DAILY_NOTE_DATA_ROOT
+```
+
+常见建目录方式：
+
+```text
+1. 短期、一次性测量，或给别人复用平台采一组数据：
+   <DATA_ROOT>/experiments/YYYY-MM-DD/<student-or-project-session>/
+     session.md
+     images/
+     figures/
+     results/
+
+2. 跨多天推进的长期实验 campaign：
+   <DATA_ROOT>/experiments/<campaign-name>/
+     daily/
+     figures/
+     results/
+     scripts/
+
+3. 微腔 large-scan Q 测量：
+   <DATA_ROOT>/experiments/<campaign>/results/<chip>/<die>/<cavity>/Q/
+
+4. 微加工 / ICP / 除胶 / 裂片等现场加工记录：
+   <DATA_ROOT>/experiments/YYYY-MM-DD/<short_process_name>/
+     session.md
+     images/
+
+5. 普通每日 notes：
+   <DATA_ROOT>/notes/YYYY/MM/YYYY-MM-DD.md
+```
+
+不确定应该建短期 session 还是长期 campaign 时，先问用户：这个实验是一次性记录，还是后面会按样品/批次连续推进多天？不要替用户擅自把记录归入已有 campaign。
+
+推荐新同学对 Codex 的第一句话：
+
+```text
+我在 daily_note_v2 仓库根目录。请先读 AGENTS.md、README.md 和相关 workspace/skills。
+我要做 <实验类型>，外部数据根是 <路径>，请帮我在 DAILY_NOTE_DATA_ROOT 下建立合适的实验目录，不要把数据写进 Git。
+```
+
 ## Current Scripts
 
 大扫测量脚本位于：

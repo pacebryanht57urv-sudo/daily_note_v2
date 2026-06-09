@@ -47,6 +47,24 @@ def latest_new_scan(q_dir: Path, started_at: float) -> tuple[Path, Path, str]:
     raise RuntimeError(f"No new timestamped large-scan npz/json found in {q_dir}")
 
 
+def latest_existing_scan(q_dir: Path) -> tuple[Path, Path, str]:
+    candidates = sorted(
+        q_dir.glob("large_scan_*_1530-1570nm.npz"),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    for npz_path in candidates:
+        meta_path = npz_path.with_suffix(".json")
+        if meta_path.exists():
+            return npz_path, meta_path, npz_path.stem
+
+    stable_npz = q_dir / "raw.npz"
+    stable_meta = q_dir / "acquisition.json"
+    if stable_npz.exists() and stable_meta.exists():
+        return stable_npz, stable_meta, stable_npz.stem
+    raise RuntimeError(f"No existing large-scan raw npz/json found in {q_dir}")
+
+
 def wait_for_new_scan_ready(
     q_dir: Path,
     started_at: float,
@@ -122,6 +140,8 @@ def assert_acquisition_gates(npz_path: Path, meta_path: Path) -> dict[str, objec
 def move_file(src: Path, dst: Path) -> None:
     if not src.exists():
         raise RuntimeError(f"Missing expected file: {src}")
+    if src.resolve() == dst.resolve():
+        return
     dst.parent.mkdir(parents=True, exist_ok=True)
     if dst.exists():
         dst.unlink()
@@ -131,11 +151,23 @@ def move_file(src: Path, dst: Path) -> None:
 def move_file_if_exists(src: Path, dst: Path) -> bool:
     if not src.exists():
         return False
+    if src.resolve() == dst.resolve():
+        return True
     dst.parent.mkdir(parents=True, exist_ok=True)
     if dst.exists():
         dst.unlink()
     shutil.move(str(src), str(dst))
     return True
+
+
+def latest_evidence_dir(q_dir: Path) -> Path | None:
+    evidence_root = q_dir / "evidence"
+    if not evidence_root.exists():
+        return None
+    dirs = [path for path in evidence_root.glob("processing_*") if path.is_dir()]
+    if not dirs:
+        return None
+    return max(dirs, key=lambda path: path.stat().st_mtime)
 
 
 def update_summary_paths(q_dir: Path, evidence_dir: Path) -> None:
@@ -295,11 +327,53 @@ def threshold_suffix(value: float) -> str:
     return f"{value:g}".replace(".", "p")
 
 
-def standardize_outputs(q_dir: Path, stem: str, *, depth_threshold: float) -> Path:
+def required_stable_outputs(q_dir: Path) -> list[Path]:
+    return [
+        q_dir / "raw.npz",
+        q_dir / "acquisition.json",
+        q_dir / "dispersion.png",
+        q_dir / "d2_fit.png",
+        q_dir / "family_points.csv",
+        q_dir / "q_by_mode.csv",
+        q_dir / "q_trend.png",
+    ]
+
+
+def required_evidence_outputs(evidence_dir: Path) -> list[Path]:
+    return [
+        evidence_dir / "dip_table.csv",
+        evidence_dir / "process_summary.json",
+        evidence_dir / "dispersion_summary.json",
+        evidence_dir / "q_summary.json",
+        evidence_dir / "raw_health.png",
+    ]
+
+
+def standardized_outputs_ready(q_dir: Path, evidence_dir: Path | None) -> bool:
+    return (
+        evidence_dir is not None
+        and all(path.exists() for path in required_stable_outputs(q_dir))
+        and all(path.exists() for path in required_evidence_outputs(evidence_dir))
+    )
+
+
+def evidence_dir_for_stem(q_dir: Path, stem: str) -> Path:
     parts = stem.split("_")
-    if len(parts) < 4:
-        raise RuntimeError(f"Unexpected large-scan stem: {stem}")
-    evidence_dir = q_dir / "evidence" / f"processing_{parts[2]}_{parts[3]}"
+    if len(parts) >= 4 and parts[0] == "large" and parts[1] == "scan":
+        return q_dir / "evidence" / f"processing_{parts[2]}_{parts[3]}"
+    return q_dir / "evidence" / f"processing_resume_{time.strftime('%Y%m%d_%H%M%S')}"
+
+
+def standardize_outputs(q_dir: Path, stem: str, *, depth_threshold: float) -> Path:
+    existing_evidence = latest_evidence_dir(q_dir)
+    unstandardized_outputs_exist = any(path.is_file() for path in q_dir.glob(f"{stem}_*"))
+    if (q_dir / f"{stem}.npz").exists() and stem != "raw":
+        unstandardized_outputs_exist = True
+    if standardized_outputs_ready(q_dir, existing_evidence) and not unstandardized_outputs_exist:
+        update_summary_paths(q_dir, existing_evidence)
+        return existing_evidence
+
+    evidence_dir = evidence_dir_for_stem(q_dir, stem)
     evidence_dir.mkdir(parents=True, exist_ok=True)
 
     depth_suffix = threshold_suffix(depth_threshold)
@@ -326,11 +400,21 @@ def standardize_outputs(q_dir: Path, stem: str, *, depth_threshold: float) -> Pa
         f"{stem}_large_scan_q_fit_examples.png": "q_fit_examples.png",
     }
     for src_name, dst_name in stable.items():
-        move_file(q_dir / src_name, q_dir / dst_name)
+        src = q_dir / src_name
+        dst = q_dir / dst_name
+        if src.exists():
+            move_file(src, dst)
+        elif not dst.exists():
+            raise RuntimeError(f"Missing expected file: {src}")
     for src_name, dst_name in optional_stable.items():
         move_file_if_exists(q_dir / src_name, q_dir / dst_name)
     for src_name, dst_name in evidence.items():
-        move_file(q_dir / src_name, evidence_dir / dst_name)
+        src = q_dir / src_name
+        dst = evidence_dir / dst_name
+        if src.exists():
+            move_file(src, dst)
+        elif not dst.exists():
+            raise RuntimeError(f"Missing expected file: {src}")
     for src_name, dst_name in optional_evidence.items():
         move_file_if_exists(q_dir / src_name, evidence_dir / dst_name)
 
@@ -339,6 +423,110 @@ def standardize_outputs(q_dir: Path, stem: str, *, depth_threshold: float) -> Pa
             path.unlink()
     update_summary_paths(q_dir, evidence_dir)
     return evidence_dir
+
+
+def nominal_width_samples_for_raw(npz_path: Path, meta_path: Path, override: int | None) -> int:
+    if override is not None:
+        return override
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    sample_rate = float(meta.get("actual_sample_rate_hz", meta.get("sample_rate_hz", 200_000.0)))
+    return max(20, round(500 * sample_rate / 500_000.0))
+
+
+def run_analysis_chain(
+    args: argparse.Namespace,
+    q_dir: Path,
+    npz_path: Path,
+    meta_path: Path,
+    stem: str,
+    *,
+    process_extra_args: list[str],
+    dispersion_extra_args: list[str],
+) -> dict[str, float]:
+    phase_seconds: dict[str, float] = {}
+    nominal_width = nominal_width_samples_for_raw(npz_path, meta_path, args.nominal_width_samples)
+    phase_seconds["process"] = run_command(
+        [
+            sys.executable,
+            str(SCRIPT_DIR / "process_large_scan.py"),
+            str(npz_path),
+            "--campaign",
+            args.campaign,
+            "--chip",
+            args.chip,
+            "--die",
+            args.die,
+            "--cavity",
+            args.cavity,
+            "--nominal-width-samples",
+            str(nominal_width),
+            *process_extra_args,
+        ]
+    )
+    dip_table = q_dir / f"{stem}_dip_table.csv"
+    phase_seconds["dispersion"] = run_command(
+        [
+            sys.executable,
+            str(SCRIPT_DIR / "fit_large_scan_dispersion.py"),
+            str(dip_table),
+            "--campaign",
+            args.campaign,
+            "--chip",
+            args.chip,
+            "--die",
+            args.die,
+            "--cavity",
+            args.cavity,
+            "--depth-threshold",
+            f"{args.depth_threshold:g}",
+            *dispersion_extra_args,
+        ]
+    )
+    family_points = q_dir / f"{stem}_dispersion_auto_centered_family_points.csv"
+    phase_seconds["q_fit"] = run_command(
+        [
+            sys.executable,
+            str(SCRIPT_DIR / "fit_large_scan_q.py"),
+            "--data-path",
+            str(npz_path),
+            "--family-points-csv",
+            str(family_points),
+            "--campaign",
+            args.campaign,
+            "--chip",
+            args.chip,
+            "--die",
+            args.die,
+            "--cavity",
+            args.cavity,
+            "--depth-threshold",
+            f"{args.depth_threshold:g}",
+        ]
+    )
+    return phase_seconds
+
+
+def refresh_cavity_card(
+    args: argparse.Namespace,
+    results_root: Path,
+    *,
+    card_extra_args: list[str],
+) -> float:
+    return run_command(
+        [
+            sys.executable,
+            str(SCRIPT_DIR / "write_cavity_card.py"),
+            "--chip",
+            args.chip,
+            "--die",
+            args.die,
+            "--cavity",
+            args.cavity,
+            "--results-root",
+            str(results_root),
+            *card_extra_args,
+        ]
+    )
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -369,12 +557,24 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--depth-threshold", type=float, default=0.4)
     parser.add_argument("--storage-format", choices=["npz", "npz-compressed"], default="npz")
     parser.add_argument("--nominal-width-samples", type=int, default=None)
+    parser.add_argument(
+        "--resume-existing-raw",
+        action="store_true",
+        help="Skip acquisition and rerun process/dispersion/Q fit from the latest raw npz/json in this cavity's Q folder.",
+    )
+    parser.add_argument(
+        "--standardize-only",
+        action="store_true",
+        help="Skip acquisition and analysis; only standardize existing outputs, update summary paths, and refresh the card.",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Print planned paths and commands without connecting to instruments.")
     return parser.parse_args(argv)
 
 
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
+    if args.resume_existing_raw and args.standardize_only:
+        raise SystemExit("Use only one of --resume-existing-raw or --standardize-only.")
     try:
         results_root = args.results_root if args.results_root is not None else default_results_dir(args.chip, campaign=args.campaign)
     except RuntimeError as exc:
@@ -432,8 +632,32 @@ def main(argv: list[str]) -> int:
         card_extra_args.extend(["--gap-um", f"{args.gap_um:g}"])
 
     if args.dry_run:
+        if args.standardize_only:
+            planned_commands = {
+                "standardize": "standardize existing outputs and refresh cavity card only",
+                "card_extra_args": card_extra_args,
+            }
+        elif args.resume_existing_raw:
+            planned_commands = {
+                "resume": "reuse latest existing raw npz/json; run process, dispersion, Q fit, standardization, and card refresh",
+                "process_extra_args": process_extra_args,
+                "dispersion_extra_args": dispersion_extra_args,
+                "card_extra_args": card_extra_args,
+            }
+        else:
+            planned_commands = {
+                "acquire": acquire_args,
+                "process_extra_args": process_extra_args,
+                "dispersion_extra_args": dispersion_extra_args,
+                "card_extra_args": card_extra_args,
+            }
         plan = {
             "dry_run": True,
+            "mode": "standardize-only"
+            if args.standardize_only
+            else "resume-existing-raw"
+            if args.resume_existing_raw
+            else "acquire-and-analyze",
             "campaign": args.campaign,
             "chip": args.chip,
             "die": args.die,
@@ -442,17 +666,72 @@ def main(argv: list[str]) -> int:
             "q_dir": str(q_dir),
             "requires_instrument_connection": False,
             "disk_fsr_mhz": args.disk_fsr_mhz,
-            "commands": {
-                "acquire": acquire_args,
-                "process_extra_args": process_extra_args,
-                "dispersion_extra_args": dispersion_extra_args,
-                "card_extra_args": card_extra_args,
-            },
+            "commands": planned_commands,
         }
         print(json.dumps(plan, indent=2, ensure_ascii=False), flush=True)
         return 0
 
     q_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.standardize_only:
+        npz_path, meta_path, stem = latest_existing_scan(q_dir)
+        meta = assert_acquisition_gates(npz_path, meta_path)
+        evidence_dir = standardize_outputs(q_dir, stem, depth_threshold=args.depth_threshold)
+        verdict = build_onsite_verdict(q_dir, evidence_dir, phase_seconds={"standardize_only": 0.0})
+        refresh_cavity_card(args, results_root, card_extra_args=card_extra_args)
+        print(
+            json.dumps(
+                {
+                    "ok": True,
+                    "mode": "standardize-only",
+                    "onsite_verdict": verdict,
+                    "q_dir": str(q_dir),
+                    "evidence_dir": str(evidence_dir),
+                    "stem": stem,
+                    "rows": meta.get("rows"),
+                    "sample_rate_hz": meta.get("actual_sample_rate_hz"),
+                },
+                indent=2,
+                ensure_ascii=False,
+            ),
+            flush=True,
+        )
+        return 0
+
+    if args.resume_existing_raw:
+        npz_path, meta_path, stem = latest_existing_scan(q_dir)
+        meta = assert_acquisition_gates(npz_path, meta_path)
+        phase_seconds = run_analysis_chain(
+            args,
+            q_dir,
+            npz_path,
+            meta_path,
+            stem,
+            process_extra_args=process_extra_args,
+            dispersion_extra_args=dispersion_extra_args,
+        )
+        evidence_dir = standardize_outputs(q_dir, stem, depth_threshold=args.depth_threshold)
+        verdict = build_onsite_verdict(q_dir, evidence_dir, phase_seconds=phase_seconds)
+        phase_seconds["cavity_card"] = refresh_cavity_card(args, results_root, card_extra_args=card_extra_args)
+        print(
+            json.dumps(
+                {
+                    "ok": True,
+                    "mode": "resume-existing-raw",
+                    "onsite_verdict": verdict,
+                    "q_dir": str(q_dir),
+                    "evidence_dir": str(evidence_dir),
+                    "stem": stem,
+                    "rows": meta.get("rows"),
+                    "sample_rate_hz": meta.get("actual_sample_rate_hz"),
+                },
+                indent=2,
+                ensure_ascii=False,
+            ),
+            flush=True,
+        )
+        return 0
+
     acquire_started_at = time.perf_counter()
     acquire_proc = start_command(acquire_args)
     npz_path: Path | None = None
@@ -464,69 +743,16 @@ def main(argv: list[str]) -> int:
             started_at,
             acquire_proc,
         )
-        raw_meta = json.loads(meta_path.read_text(encoding="utf-8"))
-        nominal_width = args.nominal_width_samples or max(
-            20,
-            round(500 * float(raw_meta["actual_sample_rate_hz"]) / 500_000.0),
-        )
-
-        phase_seconds["process"] = run_command(
-            [
-                sys.executable,
-                str(SCRIPT_DIR / "process_large_scan.py"),
-                str(npz_path),
-                "--campaign",
-                args.campaign,
-                "--chip",
-                args.chip,
-                "--die",
-                args.die,
-                "--cavity",
-                args.cavity,
-                "--nominal-width-samples",
-                str(nominal_width),
-                *process_extra_args,
-            ]
-        )
-        dip_table = q_dir / f"{stem}_dip_table.csv"
-        phase_seconds["dispersion"] = run_command(
-            [
-                sys.executable,
-                str(SCRIPT_DIR / "fit_large_scan_dispersion.py"),
-                str(dip_table),
-                "--campaign",
-                args.campaign,
-                "--chip",
-                args.chip,
-                "--die",
-                args.die,
-                "--cavity",
-                args.cavity,
-                "--depth-threshold",
-                f"{args.depth_threshold:g}",
-                *dispersion_extra_args,
-            ]
-        )
-        family_points = q_dir / f"{stem}_dispersion_auto_centered_family_points.csv"
-        phase_seconds["q_fit"] = run_command(
-            [
-                sys.executable,
-                str(SCRIPT_DIR / "fit_large_scan_q.py"),
-                "--data-path",
-                str(npz_path),
-                "--family-points-csv",
-                str(family_points),
-                "--campaign",
-                args.campaign,
-                "--chip",
-                args.chip,
-                "--die",
-                args.die,
-                "--cavity",
-                args.cavity,
-                "--depth-threshold",
-                f"{args.depth_threshold:g}",
-            ]
+        phase_seconds.update(
+            run_analysis_chain(
+                args,
+                q_dir,
+                npz_path,
+                meta_path,
+                stem,
+                process_extra_args=process_extra_args,
+                dispersion_extra_args=dispersion_extra_args,
+            )
         )
     finally:
         return_code = acquire_proc.wait()
@@ -544,21 +770,7 @@ def main(argv: list[str]) -> int:
     meta = assert_acquisition_gates(npz_path, meta_path)
     evidence_dir = standardize_outputs(q_dir, stem, depth_threshold=args.depth_threshold)
     verdict = build_onsite_verdict(q_dir, evidence_dir, phase_seconds=phase_seconds)
-    phase_seconds["cavity_card"] = run_command(
-        [
-            sys.executable,
-            str(SCRIPT_DIR / "write_cavity_card.py"),
-            "--chip",
-            args.chip,
-            "--die",
-            args.die,
-            "--cavity",
-            args.cavity,
-            "--results-root",
-            str(results_root),
-            *card_extra_args,
-        ]
-    )
+    phase_seconds["cavity_card"] = refresh_cavity_card(args, results_root, card_extra_args=card_extra_args)
     print(
         json.dumps(
             {

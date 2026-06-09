@@ -1593,6 +1593,23 @@ def find_large_scan_data_path(dip_table: Path, stem: str) -> Path | None:
     return None
 
 
+def load_unfiltered_dip_rows(path: Path) -> list[dict[str, float]]:
+    rows: list[dict[str, float]] = []
+    with path.open("r", encoding="utf-8", newline="") as fh:
+        reader = csv.DictReader(fh)
+        for raw in reader:
+            try:
+                rows.append(
+                    {
+                        "sample_index": float(raw["sample_index"]),
+                        "relative_freq_mhz": float(raw["relative_freq_mhz"]),
+                    }
+                )
+            except (KeyError, TypeError, ValueError):
+                continue
+    return rows
+
+
 def choose_common_origin(
     families: dict[str, list[dict[str, float]]],
     fits: list[dict[str, object]],
@@ -1682,6 +1699,63 @@ def representative_side_panel_rows(
     return best_mode, sorted_rows, target_labels, best_labels
 
 
+def infer_common_origin_mhz(common_rows: list[dict[str, float]], common_d1_mhz: float) -> float | None:
+    origins: list[float] = []
+    for row in common_rows:
+        try:
+            common_unfolded = float(row["common_mode_number"]) * common_d1_mhz + float(row["common_folded_mhz"])
+            origins.append(float(row["relative_freq_mhz"]) - common_unfolded)
+        except (KeyError, TypeError, ValueError):
+            continue
+    if not origins:
+        return None
+    return float(np.median(origins))
+
+
+def draw_one_fsr_transmission_trace(
+    side: plt.Axes,
+    *,
+    data_path: Path,
+    dip_table: Path,
+    selected_mode: int,
+    common_rows: list[dict[str, float]],
+    common_d1_mhz: float,
+) -> bool:
+    origin_mhz = infer_common_origin_mhz(common_rows, common_d1_mhz)
+    if origin_mhz is None:
+        return False
+
+    control_rows = load_unfiltered_dip_rows(dip_table)
+    if len(control_rows) < 2:
+        return False
+    control_rows = sorted(control_rows, key=lambda row: row["sample_index"])
+    control_samples = np.array([row["sample_index"] for row in control_rows], dtype=float)
+    control_rel_freq = np.array([row["relative_freq_mhz"] for row in control_rows], dtype=float)
+    unique_mask = np.concatenate([[True], np.diff(control_samples) > 0])
+    control_samples = control_samples[unique_mask]
+    control_rel_freq = control_rel_freq[unique_mask]
+    if len(control_samples) < 2:
+        return False
+
+    _time_s, _trigger, trans_raw, _mzi_raw = read_large_scan_data(data_path)
+    trans_norm, _baseline = normalize_transmission_with_baseline(trans_raw)
+    lo = max(0, int(np.ceil(control_samples.min())))
+    hi = min(len(trans_norm) - 1, int(np.floor(control_samples.max())))
+    if hi <= lo:
+        return False
+
+    step = max(1, (hi - lo) // 80_000)
+    sample_grid = np.arange(lo, hi + 1, step)
+    rel_freq = np.interp(sample_grid.astype(float), control_samples, control_rel_freq)
+    folded = rel_freq - origin_mhz - selected_mode * common_d1_mhz
+    mask = np.abs(folded) <= common_d1_mhz / 2.0
+    if int(np.count_nonzero(mask)) < 3:
+        return False
+
+    side.plot(trans_norm[sample_grid][mask], folded[mask] / 1000.0, color="#333333", lw=1.15, zorder=2)
+    return True
+
+
 def draw_mu0_side_panel(
     side: plt.Axes,
     *,
@@ -1697,31 +1771,16 @@ def draw_mu0_side_panel(
     )
     data_path = find_large_scan_data_path(dip_table, stem)
     plotted_trace = False
-    if data_path is not None and len(side_rows) >= 2:
+    if data_path is not None and common_rows:
         try:
-            _time_s, _trigger, trans_raw, _mzi_raw = read_large_scan_data(data_path)
-            trans_norm, _baseline = normalize_transmission_with_baseline(trans_raw)
-            control = sorted(
-                (
-                    int(float(row["sample_index"])),
-                    float(row["common_mode_number"]) * common_d1_mhz + float(row["common_folded_mhz"]),
-                )
-                for row in common_rows
+            plotted_trace = draw_one_fsr_transmission_trace(
+                side,
+                data_path=data_path,
+                dip_table=dip_table,
+                selected_mode=selected_mode,
+                common_rows=common_rows,
+                common_d1_mhz=common_d1_mhz,
             )
-            control_samples = np.array([item[0] for item in control], dtype=float)
-            control_unfolded = np.array([item[1] for item in control], dtype=float)
-            side_samples = np.array([int(float(row["sample_index"])) for row in side_rows], dtype=int)
-            pad = max(10_000, int(0.15 * (side_samples.max() - side_samples.min())))
-            lo = max(0, int(side_samples.min()) - pad)
-            hi = min(len(trans_norm) - 1, int(side_samples.max()) + pad)
-            step = max(1, (hi - lo) // 60_000)
-            sample_grid = np.arange(lo, hi + 1, step)
-            unfolded = np.interp(sample_grid, control_samples, control_unfolded)
-            trace_mode = np.rint(unfolded / common_d1_mhz).astype(int)
-            trace_folded = unfolded - trace_mode * common_d1_mhz
-            mask = np.abs(trace_folded) <= common_d1_mhz / 2.0
-            side.plot(trans_norm[sample_grid][mask], trace_folded[mask] / 1000.0, color="#333333", lw=0.75)
-            plotted_trace = True
         except Exception as exc:  # pragma: no cover - diagnostic plot should not break fitting.
             side.text(
                 0.5,
@@ -1758,12 +1817,14 @@ def draw_mu0_side_panel(
 
     side.axhline(0.0, color="black", lw=1.0)
     side.set_xlabel("Normalized CH2" if plotted_trace else "1 - depth", fontsize=13)
+    side.set_ylabel("Offset within selected FSR (GHz)" if plotted_trace else "")
     title = f"m={selected_mode:+d} one FSR"
     if target_labels and not target_labels.issubset(plotted_labels):
         missing = ",".join(sorted(target_labels - plotted_labels))
         title += f"\nmissing {missing}"
     side.set_title(title, fontsize=14)
     side.set_xlim(1.05, -0.05)
+    side.set_ylim(-common_d1_mhz / 2000.0, common_d1_mhz / 2000.0)
     side.grid(alpha=0.22)
 
 

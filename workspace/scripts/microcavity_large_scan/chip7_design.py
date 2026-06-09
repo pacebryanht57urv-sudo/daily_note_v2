@@ -37,12 +37,12 @@ CHIP7_DIE_DESIGNS: dict[str, DieDesign] = {
     "die2-4": DieDesign(65.0, (0.90, 0.95, 1.00)),
     "die3-1": DieDesign(125.0, (0.75, 0.80, 0.85), edge_pitch_um=127.0),
     "die3-2": DieDesign(125.0, (0.90, 0.95, 1.00), edge_pitch_um=127.0),
-    "die3-3": DieDesign(105.0, (0.75, 0.80, 0.85), edge_pitch_um=127.0),
-    "die3-4": DieDesign(105.0, (0.90, 0.95, 1.00), edge_pitch_um=127.0),
+    "die3-3": DieDesign(65.0, (0.75, 0.80, 0.85), edge_pitch_um=127.0),
+    "die3-4": DieDesign(65.0, (0.90, 0.95, 1.00), edge_pitch_um=127.0),
     "die4-1": DieDesign(125.0, (0.75, 0.80, 0.85), edge_pitch_um=127.0, topology="same_side"),
     "die4-2": DieDesign(125.0, (0.90, 0.95, 1.00), edge_pitch_um=127.0, topology="same_side"),
-    "die4-3": DieDesign(105.0, (0.75, 0.80, 0.85), edge_pitch_um=127.0, topology="same_side"),
-    "die4-4": DieDesign(105.0, (0.90, 0.95, 1.00), edge_pitch_um=127.0, topology="same_side"),
+    "die4-3": DieDesign(65.0, (0.75, 0.80, 0.85), edge_pitch_um=127.0, topology="same_side"),
+    "die4-4": DieDesign(65.0, (0.90, 0.95, 1.00), edge_pitch_um=127.0, topology="same_side"),
 }
 
 
