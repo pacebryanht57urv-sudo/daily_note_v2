@@ -240,20 +240,16 @@ python workspace\scripts\microcavity_large_scan\large_scan_flow.py --campaign my
 Q/
   raw.npz
   acquisition.json
-  dispersion.png
-  d2_fit.png
   family_points.csv
   q_by_mode.csv
   q_trend.png
-  mode_spectra.png
+  interactive_q.html
   evidence/
     processing_YYYYMMDD_HHMMSS/
       dip_table.csv
       process_summary.json
       dispersion_summary.json
       q_summary.json
-      q_fit_examples.png
-      raw_health.png
 ```
 
 单腔名片由脚本生成：
@@ -262,7 +258,7 @@ Q/
 python workspace\scripts\microcavity_large_scan\write_cavity_card.py --chip chip7 --die die1-1 --cavity c1
 ```
 
-名片固定为左侧身份/参数表、中间 Q trend、右侧 sensitivity 图或占位。不要手动把色散图、family map 或 one-FSR 图塞进第三列。
+名片固定为左侧身份/参数表、中间 `Q/q_trend.png` 快照、右侧 sensitivity 图或占位，底部链接到 `Q/interactive_q.html` 和未来的 sensitivity 交互页。不要手动把色散图、family map 或 one-FSR 图塞进第三列；这些细节放在交互 Q review 里查看。
 
 ## Office Analysis Commands
 

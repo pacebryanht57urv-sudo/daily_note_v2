@@ -32,6 +32,10 @@ CARD_CSS = """  body { margin: 26px; font-family: Arial, "Microsoft YaHei", sans
   .plot-title { font-size: 16px; font-weight: 700; margin: 0 0 16px; }
   .plot { width: 100%; max-height: 548px; object-fit: contain; display: block; margin: 0 auto; }
   .placeholder { height: 530px; border: 1px solid #d8d8d8; color: #777; display: flex; align-items: center; justify-content: center; text-align: center; line-height: 1.5; background: #fafafa; }
+  .review-links { max-width: 1428px; margin-top: 14px; padding: 12px 14px; border: 1px solid #d8d8d8; border-radius: 4px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; box-sizing: border-box; }
+  .review-links .label { font-weight: 700; margin-right: 4px; }
+  .review-links a, .review-links span { display: inline-flex; align-items: center; min-height: 30px; padding: 0 12px; border: 1px solid #111; border-radius: 4px; font-size: 14px; text-decoration: none; color: #111; background: #fff; }
+  .review-links span { border-color: #cfcfcf; color: #777; background: #fafafa; }
 """
 
 
@@ -324,6 +328,32 @@ def q_trend_panel(q_dir: Path, force_pending: bool = False) -> str:
     return '<div class="placeholder">pending<br>Q trend</div>'
 
 
+def review_links(cavity_dir: Path) -> str:
+    q_review = cavity_dir / "Q" / "interactive_q.html"
+    if not q_review.exists():
+        q_review = cavity_dir / "Q" / "interactive_q_demo.html"
+    q_html = (
+        '<a href="Q/interactive_q.html">Q / dispersion review</a>'
+        if q_review.name == "interactive_q.html" and q_review.exists()
+        else '<a href="Q/interactive_q_demo.html">Q / dispersion review</a>'
+        if q_review.exists()
+        else "<span>Q / dispersion review pending</span>"
+    )
+    sensitivity_review = cavity_dir / "sensitivity" / "interactive_sensitivity.html"
+    sensitivity_html = (
+        '<a href="sensitivity/interactive_sensitivity.html">Sensitivity review</a>'
+        if sensitivity_review.exists()
+        else "<span>Sensitivity review pending</span>"
+    )
+    return (
+        '<section class="review-links">\n'
+        '  <div class="label">Interactive reviews</div>\n'
+        f"  {q_html}\n"
+        f"  {sensitivity_html}\n"
+        "</section>"
+    )
+
+
 def design_values(chip: str, die: str, cavity: str, radius_um: float | None, gap_um: float | None) -> tuple[float | None, float | None]:
     if chip.lower() == "chip7":
         design = chip7_design_for_die(die)
@@ -401,7 +431,7 @@ def write_card(args: argparse.Namespace) -> Path:
     </div>
   </section>
   <section class="panel">
-    <div class="plot-title">Q trend</div>
+    <div class="plot-title">Q trend snapshot</div>
     {q_panel}
   </section>
   <section class="panel">
@@ -409,6 +439,7 @@ def write_card(args: argparse.Namespace) -> Path:
     {sensitivity_html}
   </section>
 </div>
+{review_links(cavity_dir)}
 </body>
 </html>
 """

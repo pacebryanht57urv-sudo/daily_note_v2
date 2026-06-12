@@ -32,10 +32,10 @@
 
 ## 腔入口、出腔功率与插损
 
-| 腔 | gap | 状态 | Pout | throughput / 单端插损 | 卡片 | 色散总图 | D2 拟合图 | Q 趋势 |
+| 腔 | gap | 状态 | Pout | throughput / 单端插损 | 卡片 | 交互 Q | Q 快照 | 灵敏度 |
 |---|---:|---|---:|---:|---|---|---|---|
-| `c1` | <gap> | <status> | <Pout> | <throughput / IL> | [card](<c1/cavity_card.html>) | [dispersion](<c1/Q/dispersion.png>) | [d2_fit](<c1/Q/d2_fit.png>) | [q_trend](<c1/Q/q_trend.png>) |
-| `cN` | <gap> | <status> | <Pout or not quantified> | <throughput / IL or reason> | [card](<cN/cavity_card.html>) | <link or no formal Q> | <link or no formal Q> | <link or no formal Q> |
+| `c1` | <gap> | <status> | <Pout> | <throughput / IL> | [card](<c1/cavity_card.html>) | [interactive](<c1/Q/interactive_q.html>) | [q_trend](<c1/Q/q_trend.png>) | <pending or link> |
+| `cN` | <gap> | <status> | <Pout or not quantified> | <throughput / IL or reason> | [card](<cN/cavity_card.html>) | <link or no formal Q> | <link or no formal Q> | <pending / skipped / link> |
 
 ## Family A 横向比较
 

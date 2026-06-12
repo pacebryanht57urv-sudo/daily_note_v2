@@ -20,6 +20,19 @@ For each new group:
 
 Do not just accumulate files. Each accepted group needs a short judgment: what it shows, what it does not prove, and what should happen next.
 
+## Dense Spectrum Data Policy
+
+For dense scope/spectrum captures such as Red Pitaya/PyRPL, oscilloscope FFT, spectrum-analyzer traces, or other high-point-count readouts, keep one full-resolution machine-readable source of truth per accepted group.
+
+- Use raw `.npz` plus metadata `.json` as the default full-trace record when the acquisition script can save structured arrays and settings.
+- For PyRPL/Red Pitaya spectrum captures, the default raw `.npz` must contain only the frequency axis and two `input1` vertical arrays: `input1_vpk2` from `spectrumanalyzer.single()` and `input1_dbm_per_hz` matching the current corrected dBm/Hz display. Do not save `input2`, `cross_real`, `cross_imag`, or parallel unit-converted copies unless the user explicitly requests those channels or a specific export.
+- Treat dBm, dBm/Hz, V/√Hz, 50 Ω equivalent power, and similar quantities as analysis/view-layer conversions derived from the raw trace plus metadata such as RBW and load assumption. Do not store four unit-converted full traces by default.
+- For RP/PyRPL dBm and dBm/Hz live display, apply the fixed RP high-Z input correction of `6.0206 dB` by default when converting the 1 MΩ RP input voltage to a 50 Ω matched-power display. For external RF-chain gain, prefer the spectrum analyzer GUI field `external_gain_db`; keep this as display/metadata state and do not bake corrected unit traces into the raw `.npz`.
+- Generate user-facing figures directly from the raw `.npz` and metadata; do not create a full-length processed `.csv` just to draw plots.
+- Put only compact summaries in processed records by default: key marker values, band medians, units, calibration assumptions, and file paths.
+- Export a full processed `.csv` only when the user explicitly asks for spreadsheet/Origin use, when another tool cannot read `.npz`, or when a formal downstream analysis script requires CSV input.
+- When replacing a measurement, overwrite or refresh the current accepted group's canonical raw/metadata/figures and record the source timestamp in metadata; do not keep parallel duplicate full traces unless the user asks to compare retakes.
+
 ## Script Reuse
 
 Before writing new code:

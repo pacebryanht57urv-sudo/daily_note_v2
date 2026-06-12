@@ -174,19 +174,23 @@ def update_summary_paths(q_dir: Path, evidence_dir: Path) -> None:
     replacements = {
         "process_summary.json": {
             "dip_table": str(evidence_dir / "dip_table.csv"),
-            "raw_ch2_ch3_figure": str(evidence_dir / "raw_health.png"),
+            "raw_ch2_ch3_figure": None,
+            "flattened_ch2_figure": None,
+            "folded_dispersion_figure": None,
         },
         "dispersion_summary.json": {
             "family_points_csv": str(q_dir / "family_points.csv"),
             "auto_centered_family_points_csv": str(q_dir / "family_points.csv"),
-            "common_coordinate_fit_figure": str(q_dir / "dispersion.png"),
-            "auto_centered_fit_figure": str(q_dir / "d2_fit.png"),
+            "common_coordinate_fit_figure": None,
+            "auto_centered_fit_figure": None,
+            "interactive_q_review": str(q_dir / "interactive_q.html"),
         },
         "q_summary.json": {
             "q_table": str(q_dir / "q_by_mode.csv"),
             "trend_figure": str(q_dir / "q_trend.png"),
-            "fit_examples_figure": str(evidence_dir / "q_fit_examples.png"),
-            "local_dip_mosaic_figure": str(q_dir / "mode_spectra.png"),
+            "fit_examples_figure": None,
+            "local_dip_mosaic_figure": None,
+            "interactive_q_review": str(q_dir / "interactive_q.html"),
         },
     }
     for name, patch in replacements.items():
@@ -331,11 +335,10 @@ def required_stable_outputs(q_dir: Path) -> list[Path]:
     return [
         q_dir / "raw.npz",
         q_dir / "acquisition.json",
-        q_dir / "dispersion.png",
-        q_dir / "d2_fit.png",
         q_dir / "family_points.csv",
         q_dir / "q_by_mode.csv",
         q_dir / "q_trend.png",
+        q_dir / "interactive_q.html",
     ]
 
 
@@ -345,7 +348,6 @@ def required_evidence_outputs(evidence_dir: Path) -> list[Path]:
         evidence_dir / "process_summary.json",
         evidence_dir / "dispersion_summary.json",
         evidence_dir / "q_summary.json",
-        evidence_dir / "raw_health.png",
     ]
 
 
@@ -380,25 +382,17 @@ def standardize_outputs(q_dir: Path, stem: str, *, depth_threshold: float) -> Pa
     stable = {
         f"{stem}.npz": "raw.npz",
         f"{stem}.json": "acquisition.json",
-        f"{stem}_dispersion_common_with_mu0_panel_depth_gt_{depth_suffix}.png": "dispersion.png",
-        f"{stem}_dispersion_auto_centered_depth_gt_{depth_suffix}.png": "d2_fit.png",
         f"{stem}_dispersion_auto_centered_family_points.csv": "family_points.csv",
         f"{stem}_large_scan_q_by_family.csv": "q_by_mode.csv",
         f"{stem}_large_scan_q_trends.png": "q_trend.png",
-    }
-    optional_stable = {
-        f"{stem}_local_dip_mosaic.png": "mode_spectra.png",
     }
     evidence = {
         f"{stem}_dip_table.csv": "dip_table.csv",
         f"{stem}_process_summary.json": "process_summary.json",
         f"{stem}_dispersion_fit_summary.json": "dispersion_summary.json",
         f"{stem}_large_scan_q_summary.json": "q_summary.json",
-        f"{stem}_ch2_ch3_raw.png": "raw_health.png",
     }
-    optional_evidence = {
-        f"{stem}_large_scan_q_fit_examples.png": "q_fit_examples.png",
-    }
+    optional_evidence: dict[str, str] = {}
     for src_name, dst_name in stable.items():
         src = q_dir / src_name
         dst = q_dir / dst_name
@@ -406,8 +400,6 @@ def standardize_outputs(q_dir: Path, stem: str, *, depth_threshold: float) -> Pa
             move_file(src, dst)
         elif not dst.exists():
             raise RuntimeError(f"Missing expected file: {src}")
-    for src_name, dst_name in optional_stable.items():
-        move_file_if_exists(q_dir / src_name, q_dir / dst_name)
     for src_name, dst_name in evidence.items():
         src = q_dir / src_name
         dst = evidence_dir / dst_name
@@ -770,6 +762,13 @@ def main(argv: list[str]) -> int:
     meta = assert_acquisition_gates(npz_path, meta_path)
     evidence_dir = standardize_outputs(q_dir, stem, depth_threshold=args.depth_threshold)
     verdict = build_onsite_verdict(q_dir, evidence_dir, phase_seconds=phase_seconds)
+    phase_seconds["interactive_q_review"] = run_command(
+        [
+            sys.executable,
+            str(SCRIPT_DIR / "write_interactive_q_review.py"),
+            str(q_dir.parent),
+        ]
+    )
     phase_seconds["cavity_card"] = refresh_cavity_card(args, results_root, card_extra_args=card_extra_args)
     print(
         json.dumps(
