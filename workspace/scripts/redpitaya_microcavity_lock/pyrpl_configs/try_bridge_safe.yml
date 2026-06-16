@@ -1,0 +1,93 @@
+pyrpl:
+  background_color: ''
+  loglevel: info
+  modules:
+  - NetworkAnalyzer
+  - SpectrumAnalyzer
+  - CurveViewer
+  - PyrplConfig
+  - Lockbox
+  name: try_bridge_safe
+redpitaya:
+  autostart: true
+  delay: 0.05
+  dtbo_filename: fpga/red_pitaya.dtbo
+  filename: fpga/red_pitaya.bin
+  frequency_correction: 1.0
+  gui: false
+  hostname: RP-f0f213
+  leds_off: true
+  monitor_server_name: monitor_server
+  password: root
+  port: 2222
+  reloadfpga: auto
+  reloadserver: false
+  serverbinfilename: fpga.bit.bin
+  serverdirname: //opt//pyrpl//
+  serverdtbofilename: fpga.dtbo
+  silence_env: false
+  sshport: 22
+  timeout: 1
+  user: root
+scope:
+  curve_name: scope curve
+  duration: 0.067108864
+  input1: in1
+  input2: out2
+  trigger_source: asg1
+  trigger_delay: 0.0
+  rolling_mode: false
+  average: true
+  trace_average: 1
+  ch1_active: true
+  ch2_active: true
+  ch_math_active: false
+networkanalyzer:
+  curve_name: networkanalyzer curve
+  run_continuous: false
+  output_direct: out1
+  logscale: false
+  rbw: 75.89113552886508
+  amplitude: 0.9999923706054688
+  stop_freq: 10000000.0
+  points: 10001
+  acbandwidth: 151.7825605610939
+  trace_average: 1
+  input: in2
+spectrumanalyzer:
+  curve_name: spectrumanalyzer curve
+  run_continuous: false
+  display_input1_baseband: true
+  display_input2_baseband: false
+  display_cross_amplitude: false
+  baseband: true
+  span: 7812499.999999999
+  trace_average: 10
+  input1_baseband: in2
+  input2_baseband: out2
+  acbandwidth: 0
+  window: gaussian
+  display_unit: dBm/Hz
+  center: 100000.0
+asg0:
+  frequency: 49.942173063755035
+  output_direct: 'off'
+  trigger_source: immediately
+  waveform: ramp
+  offset: 0.0
+  amplitude: 1.0
+asg1:
+  frequency: 49.942173063755035
+  trigger_source: immediately
+  waveform: square
+  output_direct: 'off'
+  offset: 0.0
+  amplitude: 0.5
+pid0:
+  i: 0
+  input: in1
+  output_direct: 'off'
+  p: 0
+  setpoint: 0
+  min_voltage: -1.0
+  differential_mode_enabled: false

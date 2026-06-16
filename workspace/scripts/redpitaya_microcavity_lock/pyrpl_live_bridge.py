@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 from pathlib import Path
 import queue
 import threading
@@ -33,6 +34,12 @@ SAFE_PARAMS = {
     "scope.hysteresis",
     "scope.rolling_mode",
     "scope.average",
+    "scope.scope_zero_enabled",
+    "scope.ch1_zero_offset_v",
+    "scope.ch2_zero_offset_v",
+    "scope.ch1_power_response_v_per_w",
+    "scope.ch2_power_response_v_per_w",
+    "scope.scope_power_avg_frames",
 }
 
 
@@ -43,11 +50,22 @@ READABLE_PREFIXES = (
     "pid2.",
     "asg0.",
     "asg1.",
+    "spectrumanalyzer.",
 )
+
+
+def parse_bool(text: str) -> bool:
+    lowered = text.strip().lower()
+    if lowered in {"1", "true", "yes", "on"}:
+        return True
+    if lowered in {"0", "false", "no", "off"}:
+        return False
+    raise argparse.ArgumentTypeError(f"Cannot parse boolean value: {text!r}")
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Start PyRPL GUI and expose a localhost parameter bridge."
+        description="Start PyRPL and expose a localhost parameter bridge."
     )
     parser.add_argument("--config", default="try", help="PyRPL config name without .yml")
     parser.add_argument("--hostname", default="192.168.1.34", help="Red Pitaya IP")
@@ -55,11 +73,619 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--listen-port", type=int, default=7870)
     parser.add_argument("--loglevel", default="info")
     parser.add_argument(
+        "--headless",
+        action="store_true",
+        help="Do not open the PyRPL Qt GUI; keep only the localhost bridge running.",
+    )
+    parser.add_argument(
         "--allow-risky",
         action="store_true",
         help="Allow writes outside the initial safe parameter whitelist.",
     )
+    parser.add_argument(
+        "--spectrum-load-ohm",
+        type=float,
+        default=50.0,
+        help="Equivalent load resistance for spectrum dBm/dBm/Hz display units.",
+    )
+    parser.add_argument(
+        "--spectrum-power-correction-enabled",
+        type=parse_bool,
+        default=True,
+        help=(
+            "Apply display-only dB correction to spectrum dBm/dBm/Hz units. "
+            "Use false to show raw RP 50-ohm-equivalent values."
+        ),
+    )
+    parser.add_argument(
+        "--spectrum-highz-correction-db",
+        type=float,
+        default=20.0 * math.log10(2.0),
+        help=(
+            "Display correction for RP 1 Mohm input reading a 50-ohm source. "
+            "Default is 20log10(2)=6.0206 dB."
+        ),
+    )
+    parser.add_argument(
+        "--spectrum-external-gain-db",
+        type=float,
+        default=0.0,
+        help="Display correction for external RF gain before the RP input.",
+    )
+    parser.add_argument(
+        "--scope-ch1-response-v-per-w",
+        type=float,
+        default=3.22013e3,
+        help="Initial CH1 optical-power response used by the patched scope GUI.",
+    )
+    parser.add_argument(
+        "--scope-ch2-response-v-per-w",
+        type=float,
+        default=3.22013e3,
+        help="Initial CH2 optical-power response used by the patched scope GUI.",
+    )
     return parser.parse_args()
+
+
+def patch_spectrum_power_units(
+    load_ohm: float,
+    correction_enabled: bool = True,
+    highz_correction_db: float = 20.0 * math.log10(2.0),
+    external_gain_db: float = 0.0,
+) -> dict[str, Any]:
+    """Add 50-ohm-equivalent dBm display units to PyRPL's spectrum GUI."""
+    from pyrpl.attributes import FloatProperty
+    from pyrpl.software_modules.spectrum_analyzer import SpectrumAnalyzer
+
+    if load_ohm <= 0:
+        raise ValueError("--spectrum-load-ohm must be positive")
+    if not all(
+        np.isfinite(value)
+        for value in (highz_correction_db, external_gain_db)
+    ):
+        raise ValueError("Spectrum display correction values must be finite")
+
+    unit_property = SpectrumAnalyzer.display_unit
+    options = list(unit_property.options(None).keys())
+    for unit in ("dBm", "dBm/Hz"):
+        if unit not in options:
+            options.append(unit)
+    unit_property.default_options = options
+
+    if not hasattr(SpectrumAnalyzer, "external_gain_db"):
+
+        class SpectrumExternalGainProperty(FloatProperty):
+            def set_value(self, obj, value):
+                super(SpectrumExternalGainProperty, self).set_value(obj, value)
+                try:
+                    obj._emit_signal_by_name("unit_changed")
+                except Exception:
+                    pass
+
+        external_gain_property = SpectrumExternalGainProperty(
+            default=external_gain_db,
+            min=-200.0,
+            max=200.0,
+            increment=1.0,
+            doc=(
+                "External RF chain gain in dB. For dBm/dBm/Hz display, "
+                "this value is subtracted after the fixed RP high-Z correction."
+            ),
+        )
+        external_gain_property.name = "external_gain_db"
+        SpectrumAnalyzer.external_gain_db = external_gain_property
+
+    if "external_gain_db" not in SpectrumAnalyzer._gui_attributes:
+        gui_attrs = list(SpectrumAnalyzer._gui_attributes)
+        insert_after = "display_unit"
+        try:
+            index = gui_attrs.index(insert_after) + 1
+        except ValueError:
+            index = len(gui_attrs)
+        gui_attrs.insert(index, "external_gain_db")
+        SpectrumAnalyzer._gui_attributes = gui_attrs
+
+    if getattr(SpectrumAnalyzer, "_daily_note_dbm_units_patched", False):
+        SpectrumAnalyzer._daily_note_spectrum_load_ohm = load_ohm
+        SpectrumAnalyzer._daily_note_power_correction_enabled = correction_enabled
+        SpectrumAnalyzer._daily_note_highz_correction_db = highz_correction_db
+        SpectrumAnalyzer._daily_note_external_gain_default_db = external_gain_db
+        return spectrum_power_correction_state()
+
+    original_data_to_unit = SpectrumAnalyzer.data_to_unit
+
+    def data_to_unit_with_dbm(self, data, unit, rbw):
+        if unit in {"dBm", "dBm/Hz"}:
+            data = np.abs(data)
+            divisor = 2.0 * self._daily_note_spectrum_load_ohm * 1e-3
+            if unit == "dBm/Hz":
+                divisor *= rbw
+            values = 10.0 * np.log10(data / divisor + np.finfo(float).tiny)
+            if self._daily_note_power_correction_enabled:
+                values -= (
+                    self._daily_note_highz_correction_db
+                    + float(self.external_gain_db)
+                )
+            return values
+        return original_data_to_unit(self, data, unit, rbw)
+
+    SpectrumAnalyzer._daily_note_spectrum_load_ohm = load_ohm
+    SpectrumAnalyzer._daily_note_power_correction_enabled = correction_enabled
+    SpectrumAnalyzer._daily_note_highz_correction_db = highz_correction_db
+    SpectrumAnalyzer._daily_note_external_gain_default_db = external_gain_db
+    SpectrumAnalyzer.data_to_unit = data_to_unit_with_dbm
+    SpectrumAnalyzer._daily_note_dbm_units_patched = True
+    return spectrum_power_correction_state()
+
+
+def patch_scope_mean_display() -> None:
+    """Add a live active-channel mean readout to PyRPL's scope GUI."""
+    from pyrpl.attributes import BoolProperty, FloatProperty, IntProperty, StringProperty
+    from pyrpl.hardware_modules.scope import Scope
+    from pyrpl.widgets.module_widgets.scope_widget import ScopeWidget
+    from qtpy import QtWidgets
+    import pyqtgraph as pg
+
+    if not hasattr(Scope, "active_means_v"):
+        active_means_property = StringProperty(
+            default="mean: n/a",
+            doc="Mean value of active scope traces currently displayed, in volts.",
+        )
+        active_means_property.name = "active_means_v"
+        Scope.active_means_v = active_means_property
+
+    if not hasattr(Scope, "scope_zero_enabled"):
+        zero_enabled_property = BoolProperty(
+            default=False,
+            doc="Apply stored CH1/CH2 voltage offsets to the displayed scope traces.",
+        )
+        zero_enabled_property.name = "scope_zero_enabled"
+        Scope.scope_zero_enabled = zero_enabled_property
+
+    if not hasattr(Scope, "ch1_zero_offset_v"):
+        ch1_zero_property = FloatProperty(
+            default=0.0,
+            min=-100.0,
+            max=100.0,
+            increment=1e-3,
+            doc="CH1 voltage offset subtracted from displayed scope traces.",
+        )
+        ch1_zero_property.name = "ch1_zero_offset_v"
+        Scope.ch1_zero_offset_v = ch1_zero_property
+
+    if not hasattr(Scope, "ch2_zero_offset_v"):
+        ch2_zero_property = FloatProperty(
+            default=0.0,
+            min=-100.0,
+            max=100.0,
+            increment=1e-3,
+            doc="CH2 voltage offset subtracted from displayed scope traces.",
+        )
+        ch2_zero_property.name = "ch2_zero_offset_v"
+        Scope.ch2_zero_offset_v = ch2_zero_property
+
+    if not hasattr(Scope, "ch1_power_response_v_per_w"):
+        ch1_response_property = FloatProperty(
+            default=3.22013e3,
+            min=1e-12,
+            max=1e12,
+            increment=100.0,
+            doc="CH1 optical-power calibration, voltage response in V/W.",
+        )
+        ch1_response_property.name = "ch1_power_response_v_per_w"
+        Scope.ch1_power_response_v_per_w = ch1_response_property
+
+    if not hasattr(Scope, "ch2_power_response_v_per_w"):
+        ch2_response_property = FloatProperty(
+            default=3.22013e3,
+            min=1e-12,
+            max=1e12,
+            increment=100.0,
+            doc="CH2 optical-power calibration, voltage response in V/W.",
+        )
+        ch2_response_property.name = "ch2_power_response_v_per_w"
+        Scope.ch2_power_response_v_per_w = ch2_response_property
+
+    if not hasattr(Scope, "scope_power_avg_frames"):
+        power_avg_property = IntProperty(
+            default=30,
+            min=1,
+            max=10000,
+            increment=1,
+            doc="Number of displayed scope frames used for slow optical-power averaging.",
+        )
+        power_avg_property.name = "scope_power_avg_frames"
+        Scope.scope_power_avg_frames = power_avg_property
+
+    if "active_means_v" in Scope._gui_attributes:
+        gui_attrs = list(Scope._gui_attributes)
+        gui_attrs = [attr for attr in gui_attrs if attr != "active_means_v"]
+        Scope._gui_attributes = gui_attrs
+
+    if getattr(ScopeWidget, "_daily_note_scope_mean_display_patched", False):
+        return
+
+    original_init_gui = ScopeWidget.init_gui
+    original_display_curve = ScopeWidget.display_curve
+
+    def format_mean(value: float) -> str:
+        if not np.isfinite(value):
+            return "nan"
+        abs_value = abs(value)
+        if abs_value < 1e-3:
+            return f"{value * 1e6:.2f} uV"
+        if abs_value < 1.0:
+            return f"{value * 1e3:.3f} mV"
+        return f"{value:.5g} V"
+
+    def format_response(value: float) -> str:
+        if not np.isfinite(value) or value <= 0:
+            return "n/a"
+        if value >= 1e6:
+            return f"{value / 1e6:.3g} MV/W"
+        if value >= 1e3:
+            return f"{value / 1e3:.3g} kV/W"
+        return f"{value:.3g} V/W"
+
+    def format_power_w(value: float) -> str:
+        if not np.isfinite(value):
+            return "nan"
+        abs_value = abs(value)
+        if abs_value < 1e-9:
+            return f"{value * 1e12:.2f} pW"
+        if abs_value < 1e-6:
+            return f"{value * 1e9:.2f} nW"
+        if abs_value < 1e-3:
+            return f"{value * 1e6:.3f} uW"
+        return f"{value * 1e3:.3f} mW"
+
+    def set_active_means(widget: Any, text: str) -> None:
+        try:
+            widget.module.active_means_v = text
+        except Exception:
+            pass
+        try:
+            aw = widget.attribute_widgets.get("active_means_v")
+            if aw is not None:
+                aw.widget_value = text
+        except Exception:
+            pass
+
+    def raw_scope_arrays(widget: Any) -> tuple[np.ndarray, np.ndarray] | None:
+        cached = getattr(widget, "_daily_note_last_raw_scope_curves", None)
+        if cached is not None:
+            return cached
+        data_avg = getattr(widget.module, "data_avg", None)
+        if data_avg is None:
+            return None
+        try:
+            data_avg = np.asarray(data_avg, dtype=float)
+            return np.asarray(data_avg[0], dtype=float), np.asarray(data_avg[1], dtype=float)
+        except Exception:
+            return None
+
+    def clear_power_history(widget: Any) -> None:
+        widget._daily_note_power_history = [[], []]
+
+    def update_power_history(
+        widget: Any, powers: tuple[float, float], update_history: bool
+    ) -> tuple[float, float]:
+        history = getattr(widget, "_daily_note_power_history", None)
+        if history is None:
+            history = [[], []]
+            widget._daily_note_power_history = history
+        try:
+            avg_frames = max(1, int(getattr(widget.module, "scope_power_avg_frames", 30)))
+        except Exception:
+            avg_frames = 30
+        if update_history:
+            for idx, power in enumerate(powers):
+                if np.isfinite(power):
+                    history[idx].append(float(power))
+                if len(history[idx]) > avg_frames:
+                    del history[idx][:-avg_frames]
+        averages = []
+        for idx, power in enumerate(powers):
+            values = history[idx][-avg_frames:]
+            if values:
+                averages.append(float(np.nanmean(values)))
+            else:
+                averages.append(float(power))
+        return averages[0], averages[1]
+
+    def set_zero_from_current(widget: Any, mode: str) -> None:
+        arrays = raw_scope_arrays(widget)
+        if arrays is None:
+            return
+        ch1, ch2 = arrays
+        if mode in {"active", "both"} and (mode == "both" or widget.module.ch1_active):
+            widget.module.ch1_zero_offset_v = float(np.nanmean(ch1))
+        if mode in {"active", "both"} and (mode == "both" or widget.module.ch2_active):
+            widget.module.ch2_zero_offset_v = float(np.nanmean(ch2))
+        widget.module.scope_zero_enabled = True
+        clear_power_history(widget)
+        refresh_zero_overlay(widget)
+
+    def clear_zero(widget: Any) -> None:
+        widget.module.ch1_zero_offset_v = 0.0
+        widget.module.ch2_zero_offset_v = 0.0
+        widget.module.scope_zero_enabled = False
+        clear_power_history(widget)
+        refresh_zero_overlay(widget)
+
+    def make_response_spinbox(widget: Any, attr: str) -> Any:
+        spin = QtWidgets.QDoubleSpinBox()
+        spin.setDecimals(2)
+        spin.setRange(1e-12, 1e12)
+        spin.setSingleStep(100.0)
+        spin.setValue(float(getattr(widget.module, attr)))
+        spin.setSuffix(" V/W")
+        spin.setMaximumWidth(150)
+
+        def update_response(value: float) -> None:
+            setattr(widget.module, attr, float(value))
+            clear_power_history(widget)
+            refresh_zero_overlay(widget)
+
+        spin.valueChanged.connect(update_response)
+        return spin
+
+    def make_avg_frames_spinbox(widget: Any) -> Any:
+        spin = QtWidgets.QSpinBox()
+        spin.setRange(1, 10000)
+        spin.setSingleStep(1)
+        spin.setValue(int(getattr(widget.module, "scope_power_avg_frames", 30)))
+        spin.setSuffix(" frames")
+        spin.setMaximumWidth(130)
+
+        def update_avg_frames(value: int) -> None:
+            widget.module.scope_power_avg_frames = int(value)
+            clear_power_history(widget)
+            refresh_zero_overlay(widget)
+
+        spin.valueChanged.connect(update_avg_frames)
+        return spin
+
+    def init_gui_with_active_means(self):
+        original_init_gui(self)
+        try:
+            self.mean_text_item = pg.TextItem(
+                text="mean: n/a",
+                color=(255, 255, 255),
+                anchor=(1, 0),
+                fill=(0, 0, 0, 170),
+                border=(255, 255, 255, 120),
+            )
+            self.plot_item.addItem(self.mean_text_item, ignoreBounds=True)
+        except Exception:
+            self.mean_text_item = None
+        update_mean_text_position(self)
+
+        try:
+            self.zero_group = QtWidgets.QGroupBox("Display zero")
+            zero_layout = QtWidgets.QHBoxLayout()
+            zero_layout.setContentsMargins(4, 4, 4, 4)
+            self.zero_group.setLayout(zero_layout)
+
+            self.zero_active_button = QtWidgets.QPushButton("Set active")
+            self.zero_both_button = QtWidgets.QPushButton("Set both")
+            self.zero_clear_button = QtWidgets.QPushButton("Clear")
+            for button in (
+                self.zero_active_button,
+                self.zero_both_button,
+                self.zero_clear_button,
+            ):
+                button.setMaximumWidth(85)
+                zero_layout.addWidget(button)
+            self.zero_active_button.clicked.connect(
+                lambda: set_zero_from_current(self, "active")
+            )
+            self.zero_both_button.clicked.connect(
+                lambda: set_zero_from_current(self, "both")
+            )
+            self.zero_clear_button.clicked.connect(lambda: clear_zero(self))
+            self.layout_misc.addWidget(self.zero_group)
+        except Exception:
+            pass
+
+        try:
+            self.power_group = QtWidgets.QGroupBox("Power cal")
+            power_layout = QtWidgets.QGridLayout()
+            power_layout.setContentsMargins(4, 4, 4, 4)
+            self.power_group.setLayout(power_layout)
+
+            power_layout.addWidget(QtWidgets.QLabel("CH1"), 0, 0)
+            self.ch1_response_spin = make_response_spinbox(
+                self, "ch1_power_response_v_per_w"
+            )
+            power_layout.addWidget(self.ch1_response_spin, 0, 1)
+
+            power_layout.addWidget(QtWidgets.QLabel("CH2"), 1, 0)
+            self.ch2_response_spin = make_response_spinbox(
+                self, "ch2_power_response_v_per_w"
+            )
+            power_layout.addWidget(self.ch2_response_spin, 1, 1)
+
+            power_layout.addWidget(QtWidgets.QLabel("avg"), 2, 0)
+            self.power_avg_frames_spin = make_avg_frames_spinbox(self)
+            power_layout.addWidget(self.power_avg_frames_spin, 2, 1)
+
+            self.power_avg_clear_button = QtWidgets.QPushButton("Clear avg")
+            self.power_avg_clear_button.setMaximumWidth(100)
+            self.power_avg_clear_button.clicked.connect(
+                lambda: (clear_power_history(self), refresh_zero_overlay(self))
+            )
+            power_layout.addWidget(self.power_avg_clear_button, 3, 1)
+
+            self.layout_misc.addWidget(self.power_group)
+        except Exception:
+            pass
+
+        try:
+            self.plot_item.vb.sigRangeChanged.connect(
+                lambda *args: update_mean_text_position(self)
+            )
+        except Exception:
+            pass
+
+    def update_mean_text_position(widget: Any) -> None:
+        item = getattr(widget, "mean_text_item", None)
+        if item is None:
+            return
+        try:
+            (x_min, x_max), (y_min, y_max) = widget.plot_item.viewRange()
+            x = x_min + 0.985 * (x_max - x_min)
+            y = y_max - 0.055 * (y_max - y_min)
+            item.setPos(x, y)
+        except Exception:
+            pass
+
+    def refresh_zero_overlay(widget: Any, update_history: bool = False) -> None:
+        arrays = raw_scope_arrays(widget)
+        if arrays is None:
+            text = "mean: waiting for scope data"
+            set_active_means(widget, text)
+            try:
+                if getattr(widget, "mean_text_item", None) is not None:
+                    widget.mean_text_item.setText(text)
+            except Exception:
+                pass
+            return
+
+        ch1, ch2 = arrays
+        zero_enabled = bool(getattr(widget.module, "scope_zero_enabled", False))
+        offsets = (
+            float(getattr(widget.module, "ch1_zero_offset_v", 0.0)),
+            float(getattr(widget.module, "ch2_zero_offset_v", 0.0)),
+        )
+        raw_means = (float(np.nanmean(ch1)), float(np.nanmean(ch2)))
+        shown_means = (
+            raw_means[0] - offsets[0] if zero_enabled else raw_means[0],
+            raw_means[1] - offsets[1] if zero_enabled else raw_means[1],
+        )
+        responses = (
+            float(getattr(widget.module, "ch1_power_response_v_per_w", np.nan)),
+            float(getattr(widget.module, "ch2_power_response_v_per_w", np.nan)),
+        )
+        powers = (
+            shown_means[0] / responses[0]
+            if np.isfinite(responses[0]) and responses[0] > 0
+            else np.nan,
+            shown_means[1] / responses[1]
+            if np.isfinite(responses[1]) and responses[1] > 0
+            else np.nan,
+        )
+        avg_powers = update_power_history(widget, powers, update_history)
+        try:
+            avg_frames = max(1, int(getattr(widget.module, "scope_power_avg_frames", 30)))
+        except Exception:
+            avg_frames = 30
+
+        raw_entries: list[str] = []
+        offset_entries: list[str] = []
+        shown_entries: list[str] = []
+        response_entries: list[str] = []
+        power_entries: list[str] = []
+        avg_power_entries: list[str] = []
+        active = (bool(widget.module.ch1_active), bool(widget.module.ch2_active))
+        for idx, is_active in enumerate(active):
+            if not is_active:
+                continue
+            label = f"CH{idx + 1}"
+            raw_entries.append(f"{label} {format_mean(raw_means[idx])}")
+            offset_entries.append(f"{label} {format_mean(offsets[idx])}")
+            shown_entries.append(f"{label} {format_mean(shown_means[idx])}")
+            response_entries.append(f"{label} {format_response(responses[idx])}")
+            power_entries.append(f"{label} {format_power_w(powers[idx])}")
+            avg_power_entries.append(f"{label} {format_power_w(avg_powers[idx])}")
+        if widget.module.ch_math_active:
+            shown_entries.append("MATH shown")
+
+        if raw_entries:
+            lines = [f"raw mean: {' | '.join(raw_entries)}"]
+            if zero_enabled:
+                lines.append(f"offset: {' | '.join(offset_entries)}")
+                lines.append(f"shown mean: {' | '.join(shown_entries)}")
+            else:
+                lines.append("zero: off")
+            lines.append(f"response: {' | '.join(response_entries)}")
+            lines.append(f"P inst: {' | '.join(power_entries)}")
+            lines.append(f"P avg({avg_frames}f): {' | '.join(avg_power_entries)}")
+        else:
+            lines = ["mean: no active channel"]
+        text = "\n".join(lines)
+        set_active_means(widget, text)
+        try:
+            if getattr(widget, "mean_text_item", None) is not None:
+                widget.mean_text_item.setText(text)
+                update_mean_text_position(widget)
+        except Exception:
+            pass
+
+    def display_curve_with_active_means(self, list_of_arrays):
+        times, curves = list_of_arrays
+        ch1 = np.asarray(curves[0], dtype=float)
+        ch2 = np.asarray(curves[1], dtype=float)
+        self._daily_note_last_raw_scope_curves = (ch1, ch2)
+        if bool(getattr(self.module, "scope_zero_enabled", False)):
+            ch1_display = ch1 - float(getattr(self.module, "ch1_zero_offset_v", 0.0))
+            ch2_display = ch2 - float(getattr(self.module, "ch2_zero_offset_v", 0.0))
+            result = original_display_curve(
+                self,
+                [times, np.asarray((ch1_display, ch2_display), dtype=float)],
+            )
+        else:
+            result = original_display_curve(self, list_of_arrays)
+        refresh_zero_overlay(self, update_history=True)
+        return result
+
+    ScopeWidget.init_gui = init_gui_with_active_means
+    ScopeWidget.display_curve = display_curve_with_active_means
+    ScopeWidget._daily_note_scope_mean_display_patched = True
+
+
+def spectrum_power_correction_state(spectrum: Any | None = None) -> dict[str, Any]:
+    from pyrpl.software_modules.spectrum_analyzer import SpectrumAnalyzer
+
+    enabled = bool(
+        getattr(SpectrumAnalyzer, "_daily_note_power_correction_enabled", True)
+    )
+    highz = float(getattr(SpectrumAnalyzer, "_daily_note_highz_correction_db", 0.0))
+    if spectrum is not None:
+        gain = float(getattr(spectrum, "external_gain_db", 0.0))
+    else:
+        gain = float(
+            getattr(SpectrumAnalyzer, "_daily_note_external_gain_default_db", 0.0)
+        )
+    load = float(getattr(SpectrumAnalyzer, "_daily_note_spectrum_load_ohm", 50.0))
+    total = highz + gain if enabled else 0.0
+    return {
+        "ok": True,
+        "load_ohm": load,
+        "enabled": enabled,
+        "highz_correction_db": highz,
+        "external_gain_db": gain,
+        "total_subtracted_db": total,
+        "applies_to_units": ["dBm", "dBm/Hz"],
+    }
+
+
+def spectrum_vpk2_to_display_dbm_per_hz(
+    vpk2: np.ndarray,
+    rbw_hz: float,
+    correction_state: dict[str, Any],
+) -> np.ndarray:
+    """Convert PyRPL Vpk^2 spectrum data to corrected display dBm/Hz."""
+    if rbw_hz <= 0:
+        raise ValueError("rbw_hz must be positive")
+    load_ohm = float(correction_state["load_ohm"])
+    if load_ohm <= 0:
+        raise ValueError("load_ohm must be positive")
+    values = 10.0 * np.log10(
+        np.abs(vpk2) / (2.0 * load_ohm * 1e-3 * rbw_hz) + np.finfo(float).tiny
+    )
+    values -= float(correction_state.get("total_subtracted_db", 0.0))
+    return values
 
 
 def coerce_value(text: str, current: Any | None) -> Any:
@@ -85,9 +711,16 @@ def coerce_value(text: str, current: Any | None) -> Any:
 
 
 class Bridge:
-    def __init__(self, pyrpl_instance: Any, allow_risky: bool = False):
+    def __init__(
+        self,
+        pyrpl_instance: Any,
+        allow_risky: bool = False,
+        metadata: dict[str, Any] | None = None,
+    ):
         self.p = pyrpl_instance
         self.allow_risky = allow_risky
+        self.metadata = metadata or {}
+        self.started_at = time.time()
         self.tasks: "queue.Queue[tuple[callable, threading.Event, dict[str, Any]]]" = (
             queue.Queue()
         )
@@ -123,7 +756,10 @@ class Bridge:
         if "." not in dotted:
             raise ValueError("Parameter must look like module.attribute")
         module_name, attr = dotted.split(".", 1)
-        module = getattr(self.p.rp, module_name)
+        if hasattr(self.p.rp, module_name):
+            module = getattr(self.p.rp, module_name)
+        else:
+            module = getattr(self.p, module_name)
         return module, attr
 
     def get_param(self, dotted: str) -> dict[str, Any]:
@@ -153,30 +789,83 @@ class Bridge:
             "type": type(after).__name__,
         }
 
+    def get_spectrum_power_correction(self) -> dict[str, Any]:
+        return spectrum_power_correction_state(self.p.spectrumanalyzer)
+
+    def health(self) -> dict[str, Any]:
+        return {
+            "ok": True,
+            "message": "pyrpl_live_bridge is running",
+            "bridge": {
+                "pid": os.getpid(),
+                "started_at": self.started_at,
+                "uptime_s": time.time() - self.started_at,
+                "allow_risky": self.allow_risky,
+                **self.metadata,
+            },
+            "spectrum_power_correction": self.get_spectrum_power_correction(),
+            "safe_params": sorted(SAFE_PARAMS),
+            "supports_shutdown": True,
+        }
+
+    def set_spectrum_power_correction(
+        self,
+        enabled: bool | None = None,
+        highz_correction_db: float | None = None,
+        external_gain_db: float | None = None,
+        load_ohm: float | None = None,
+    ) -> dict[str, Any]:
+        spectrum = self.p.spectrumanalyzer
+        state = spectrum_power_correction_state(spectrum)
+        patch_spectrum_power_units(
+            load_ohm=state["load_ohm"] if load_ohm is None else load_ohm,
+            correction_enabled=state["enabled"] if enabled is None else enabled,
+            highz_correction_db=(
+                state["highz_correction_db"]
+                if highz_correction_db is None
+                else highz_correction_db
+            ),
+            external_gain_db=(
+                state["external_gain_db"]
+                if external_gain_db is None
+                else external_gain_db
+            ),
+        )
+        if external_gain_db is not None:
+            spectrum.external_gain_db = external_gain_db
+        return spectrum_power_correction_state(spectrum)
+
     def capture_scope(
-        self, tag: str = "scope_capture", timeout: float = 5.0, make_plot: bool = True
+        self,
+        tag: str = "scope_capture",
+        timeout: float = 5.0,
+        make_plot: bool = True,
+        save: bool = True,
+        inline: bool = False,
+        max_points: int = 1500,
     ) -> dict[str, Any]:
         scope = self.p.rp.scope
         curve = scope.single(timeout=timeout)
         ch1 = np.asarray(curve[0], dtype=float)
         ch2 = np.asarray(curve[1], dtype=float)
         times = np.asarray(scope.times, dtype=float)
-        RESULTS_DIR.mkdir(parents=True, exist_ok=True)
         safe_tag = "".join(c if c.isalnum() or c in "-_" else "_" for c in tag)
         path = RESULTS_DIR / f"{safe_tag}.npz"
-        np.savez(
-            path,
-            t=times,
-            ch1=ch1,
-            ch2=ch2,
-            input1=str(scope.input1),
-            input2=str(scope.input2),
-            duration=float(scope.duration),
-            trigger_source=str(scope.trigger_source),
-        )
+        if save:
+            RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+            np.savez(
+                path,
+                t=times,
+                ch1=ch1,
+                ch2=ch2,
+                input1=str(scope.input1),
+                input2=str(scope.input2),
+                duration=float(scope.duration),
+                trigger_source=str(scope.trigger_source),
+            )
         analysis = analyze_scope_trace(times, ch1, ch2, str(scope.input1), str(scope.input2))
         plot_path = RESULTS_DIR / f"{safe_tag}_lockpoint.png"
-        if make_plot:
+        if make_plot and save:
             plot_result = make_lockpoint_plot(
                 times=times,
                 ch1=ch1,
@@ -188,10 +877,11 @@ class Bridge:
                 title=safe_tag,
             )
         else:
-            plot_result = {"ok": False, "skipped": True, "reason": "plot=false"}
-        return {
+            reason = "plot=false" if not make_plot else "save=false"
+            plot_result = {"ok": False, "skipped": True, "reason": reason}
+        payload = {
             "ok": True,
-            "path": str(path),
+            "path": str(path) if save else None,
             "plot_path": str(plot_path) if plot_result.get("ok") else None,
             "plot": plot_result,
             "n": int(len(times)),
@@ -201,176 +891,231 @@ class Bridge:
             "trigger_source": str(scope.trigger_source),
             "analysis": analysis,
         }
+        if inline:
+            limit = max(100, int(max_points))
+            step = max(1, int(math.ceil(len(times) / limit)))
+            payload["trace"] = {
+                "t": times[::step].astype(float).tolist(),
+                "ch1": ch1[::step].astype(float).tolist(),
+                "ch2": ch2[::step].astype(float).tolist(),
+                "decimation": step,
+            }
+        return payload
 
-    def catch_lock(
+    def capture_spectrum(
         self,
-        tag: str = "catch_lock",
-        branch: str = "right",
-        p_gain: float = -0.002,
-        i_gain: float = -0.004632,
-        timeout: float = 5.0,
-        monitor_seconds: float = 3.0,
-        monitor_interval: float = 0.1,
-        sweep_frequency: float = 50.0,
-        sweep_amplitude: float = 0.5,
-        handoff_offset: float = 0.0,
-        timed: bool = False,
-        phase_delay_offset: float = 0.0,
+        tag: str = "spectrum_capture",
+        timeout: float = 15.0,
+        load_ohm: float = 50.0,
+        save_csv: bool = False,
+        save_npz: bool = True,
+        inline: bool = False,
+        max_points: int = 1500,
+        acquire: bool = True,
     ) -> dict[str, Any]:
-        rp = self.p.rp
-        scope = rp.scope
-        asg0 = rp.asg0
-        asg1 = rp.asg1
-        pid0 = rp.pid0
+        if load_ohm <= 0:
+            raise ValueError("load_ohm must be positive")
+        spectrum = self.p.spectrumanalyzer
+        data = None
+        freqs = None
+        source = "single"
+        if not acquire:
+            cached = getattr(spectrum, "data_avg", None)
+            cached_x = getattr(spectrum, "data_x", None)
+            if cached is not None and cached_x is not None:
+                try:
+                    cached_arr = np.asarray(cached, dtype=float)
+                    cached_freqs = np.asarray(cached_x, dtype=float)
+                    if cached_arr.size and cached_freqs.size:
+                        data = cached_arr
+                        freqs = cached_freqs
+                        source = "cache"
+                except Exception:
+                    data = None
+                    freqs = None
+        if data is None or freqs is None:
+            data = np.asarray(spectrum.single(timeout=timeout), dtype=float)
+            freqs = np.asarray(spectrum.data_x, dtype=float)
+        rbw = float(spectrum.rbw)
+        if data.ndim == 1:
+            input1_vpk2 = data
+        else:
+            input1_vpk2 = np.asarray(data[0], dtype=float)
+        display_power_correction = spectrum_power_correction_state(spectrum)
+        input1_dbm_per_hz = spectrum_vpk2_to_display_dbm_per_hz(
+            input1_vpk2,
+            rbw,
+            display_power_correction,
+        )
 
-        pid0.p = 0
-        pid0.i = 0
-        pid0.output_direct = "off"
-        asg0.output_direct = "off"
+        RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+        safe_tag = "".join(c if c.isalnum() or c in "-_" else "_" for c in tag)
+        npz_path = RESULTS_DIR / f"{safe_tag}.npz"
+        csv_path = RESULTS_DIR / f"{safe_tag}.csv" if save_csv else None
+        meta_path = RESULTS_DIR / f"{safe_tag}.json"
 
-        asg0.waveform = "ramp"
-        asg0.amplitude = sweep_amplitude
-        asg0.offset = 0
-        asg0.frequency = sweep_frequency
-        asg1.waveform = "square"
-        asg1.amplitude = 0.5
-        asg1.offset = 0
-        asg1.frequency = sweep_frequency
-        asg1.output_direct = "off"
-        scope.input1 = "in1"
-        scope.input2 = "out2"
-        scope.trigger_source = "asg1"
-        scope.trigger_delay = 0
-        scope.duration = 0.067108864
-        scope.rolling_mode = False
+        arrays = {
+            "frequency_hz": freqs,
+            "input1_vpk2": input1_vpk2,
+            "input1_dbm_per_hz": input1_dbm_per_hz,
+        }
+        if save_npz:
+            np.savez(npz_path, **arrays)
 
-        asg0.output_direct = "out2"
-        curve = scope.single(timeout=timeout)
-        ch1 = np.asarray(curve[0], dtype=float)
-        ch2 = np.asarray(curve[1], dtype=float)
-        times = np.asarray(scope.times, dtype=float)
-        analysis = analyze_scope_trace(times, ch1, ch2, str(scope.input1), str(scope.input2))
-        lock = analysis.get("quarter_lockpoint", {})
-        if not lock.get("ok"):
-            asg0.output_direct = "off"
-            return {"ok": False, "error": "Could not compute lock point", "analysis": analysis}
+        if csv_path is not None:
+            with csv_path.open("w", encoding="utf-8", newline="") as fh:
+                fh.write("frequency_hz,input1_vpk2,input1_dbm_per_hz\n")
+                for idx, freq in enumerate(freqs):
+                    fh.write(
+                        f"{float(freq):.12g},"
+                        f"{float(input1_vpk2[idx]):.12g},"
+                        f"{float(input1_dbm_per_hz[idx]):.12g}\n"
+                    )
 
-        point = lock.get(f"{branch}_lockpoint")
-        if not point:
-            asg0.output_direct = "off"
-            return {
-                "ok": False,
-                "error": f"No {branch!r} lockpoint in sweep trace",
-                "analysis": analysis,
+        finite = (
+            np.isfinite(input1_vpk2)
+            & np.isfinite(input1_dbm_per_hz)
+            & np.isfinite(freqs)
+        )
+        band = finite & (freqs > 0)
+        summary = {}
+        if np.any(band):
+            summary["input1_vpk2"] = {
+                "median": float(np.nanmedian(input1_vpk2[band])),
+                "min": float(np.nanmin(input1_vpk2[band])),
+                "max": float(np.nanmax(input1_vpk2[band])),
+            }
+            summary["input1_dbm_per_hz"] = {
+                "median": float(np.nanmedian(input1_dbm_per_hz[band])),
+                "min": float(np.nanmin(input1_dbm_per_hz[band])),
+                "max": float(np.nanmax(input1_dbm_per_hz[band])),
             }
 
-        target = float(lock["transmission_lock_quarter"])
-        capture_voltage = float(point["sweep_voltage"])
-        handoff_voltage = capture_voltage + handoff_offset
-        phase_delay = 0.0
-        if timed:
-            period = 1.0 / sweep_frequency
-            trace_end = float(np.nanmax(times))
-            cross_time = float(point["time"])
-            phase_delay = (cross_time - trace_end) % period
-            phase_delay = max(0.0, phase_delay + phase_delay_offset)
-        safe_tag = "".join(c if c.isalnum() or c in "-_" else "_" for c in tag)
-        RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-        path = RESULTS_DIR / f"{safe_tag}.npz"
-        plot_path = RESULTS_DIR / f"{safe_tag}_lockpoint.png"
-        np.savez(
-            path,
-            t=times,
-            ch1=ch1,
-            ch2=ch2,
-            input1=str(scope.input1),
-            input2=str(scope.input2),
-            duration=float(scope.duration),
-            trigger_source=str(scope.trigger_source),
-            branch=branch,
-            capture_voltage=capture_voltage,
-            handoff_offset=handoff_offset,
-            handoff_voltage=handoff_voltage,
-            timed=timed,
-            phase_delay=phase_delay,
-            phase_delay_offset=phase_delay_offset,
-            target=target,
-            p_gain=p_gain,
-            i_gain=i_gain,
-        )
-        make_lockpoint_plot(
-            times=times,
-            ch1=ch1,
-            ch2=ch2,
-            input1=str(scope.input1),
-            input2=str(scope.input2),
-            analysis=analysis,
-            path=plot_path,
-            title=safe_tag,
-        )
-
-        if timed and phase_delay > 0:
-            time.sleep(phase_delay)
-        asg0.output_direct = "off"
-        pid0.setpoint = target
-        pid0.p = 0
-        pid0.i = 0
-        pid0.ival = handoff_voltage
-        pid0.output_direct = "out2"
-        pid0.p = p_gain
-        pid0.i = i_gain
-
-        monitor = []
-        start = time.time()
-        while time.time() - start < monitor_seconds:
-            monitor.append(
-                {
-                    "t_s": float(time.time() - start),
-                    "ch1": float(scope.voltage_in1),
-                    "ch2": float(scope.voltage_in2),
-                    "ival": float(pid0.ival),
-                    "p": float(pid0.p),
-                    "i": float(pid0.i),
-                }
-            )
-            time.sleep(monitor_interval)
-
-        ch1_values = np.asarray([row["ch1"] for row in monitor], dtype=float)
-        ch2_values = np.asarray([row["ch2"] for row in monitor], dtype=float)
-        summary = {
-            "n": int(ch1_values.size),
-            "ch1_mean": float(np.mean(ch1_values)) if ch1_values.size else None,
-            "ch1_min": float(np.min(ch1_values)) if ch1_values.size else None,
-            "ch1_max": float(np.max(ch1_values)) if ch1_values.size else None,
-            "ch1_ptp": float(np.ptp(ch1_values)) if ch1_values.size else None,
-            "ch2_mean": float(np.mean(ch2_values)) if ch2_values.size else None,
-            "ch2_min": float(np.min(ch2_values)) if ch2_values.size else None,
-            "ch2_max": float(np.max(ch2_values)) if ch2_values.size else None,
-            "ch2_ptp": float(np.ptp(ch2_values)) if ch2_values.size else None,
-            "target_error_mean": float(np.mean(ch1_values) - target) if ch1_values.size else None,
-        }
-        return {
+        meta = {
             "ok": True,
-            "path": str(path),
-            "plot_path": str(plot_path),
-            "branch": branch,
-            "target": target,
-            "capture_voltage": capture_voltage,
-            "handoff_offset": handoff_offset,
-            "handoff_voltage": handoff_voltage,
-            "timed": timed,
-            "phase_delay": phase_delay,
-            "phase_delay_offset": phase_delay_offset,
-            "p_gain_requested": p_gain,
-            "i_gain_requested": i_gain,
-            "p_gain_readback": float(pid0.p),
-            "i_gain_readback": float(pid0.i),
-            "ival_readback": float(pid0.ival),
-            "monitor_summary": summary,
-            "monitor": monitor,
-            "analysis": analysis,
+            "tag": safe_tag,
+            "path": str(npz_path) if save_npz else None,
+            "csv_path": str(csv_path) if csv_path is not None else None,
+            "save_csv": save_csv,
+            "save_npz": save_npz,
+            "metadata_path": str(meta_path) if save_npz else None,
+            "saved_arrays": ["frequency_hz", "input1_vpk2", "input1_dbm_per_hz"],
+            "raw_channel": "input1",
+            "raw_unit": "Vpk^2, from PyRPL spectrumanalyzer.single() before display-unit conversion",
+            "display_unit_saved": "dBm/Hz",
+            "display_power_correction": display_power_correction,
+            "display_load_ohm": display_power_correction["load_ohm"],
+            "source": source,
+            "rbw_hz": rbw,
+            "baseband": bool(spectrum.baseband),
+            "span_hz": float(spectrum.span),
+            "center_hz": float(spectrum.center),
+            "window": str(spectrum.window),
+            "trace_average": int(spectrum.trace_average),
+            "current_avg": int(spectrum.current_avg),
+            "input": str(spectrum.input),
+            "input1_baseband": str(spectrum.input1_baseband),
+            "input2_baseband": str(spectrum.input2_baseband),
+            "display_input1_baseband": bool(spectrum.display_input1_baseband),
+            "display_input2_baseband": bool(spectrum.display_input2_baseband),
+            "n": int(len(freqs)),
+            "labels": ["input1_vpk2", "input1_dbm_per_hz"],
+            "summary": summary,
         }
+        if inline:
+            limit = max(100, int(max_points))
+            step = max(1, int(math.ceil(len(freqs) / limit)))
+            meta["trace"] = {
+                "frequency_hz": freqs[::step].astype(float).tolist(),
+                "input1_vpk2": input1_vpk2[::step].astype(float).tolist(),
+                "input1_dbm_per_hz": input1_dbm_per_hz[::step].astype(float).tolist(),
+                "decimation": step,
+            }
+        if save_npz:
+            meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+        return meta
 
+    def capture_network_analyzer(
+        self,
+        tag: str = "network_analyzer_preview",
+        timeout: float = 20.0,
+        inline: bool = True,
+        max_points: int = 1200,
+        acquire: bool = True,
+    ) -> dict[str, Any]:
+        na = self.p.networkanalyzer
+        data = None
+        freqs = None
+        source = "single"
+        if not acquire:
+            cached = getattr(na, "data_avg", None)
+            cached_x = getattr(na, "data_x", None)
+            if cached is not None and cached_x is not None:
+                try:
+                    cached_arr = np.asarray(cached)
+                    cached_freqs = np.asarray(cached_x, dtype=float)
+                    if cached_arr.size and cached_freqs.size:
+                        data = cached_arr
+                        freqs = cached_freqs
+                        source = "cache"
+                except Exception:
+                    data = None
+                    freqs = None
+        if data is None or freqs is None:
+            data = np.asarray(na.single(timeout=timeout))
+            freqs = np.asarray(na.frequencies, dtype=float)
+        if data.ndim > 1:
+            response = np.asarray(data[0], dtype=complex)
+        else:
+            response = np.asarray(data, dtype=complex)
+        n = min(len(freqs), len(response))
+        freqs = freqs[:n]
+        response = response[:n]
+        magnitude = np.abs(response)
+        magnitude_db = 20.0 * np.log10(np.maximum(magnitude, 1e-300))
+        phase_deg = np.unwrap(np.angle(response)) * 180.0 / np.pi
+        finite = np.isfinite(freqs) & np.isfinite(magnitude_db) & np.isfinite(phase_deg)
+        summary = {}
+        if np.any(finite):
+            summary = {
+                "magnitude_db": {
+                    "median": float(np.nanmedian(magnitude_db[finite])),
+                    "min": float(np.nanmin(magnitude_db[finite])),
+                    "max": float(np.nanmax(magnitude_db[finite])),
+                },
+                "phase_deg": {
+                    "median": float(np.nanmedian(phase_deg[finite])),
+                    "min": float(np.nanmin(phase_deg[finite])),
+                    "max": float(np.nanmax(phase_deg[finite])),
+                },
+            }
+        payload = {
+            "ok": True,
+            "tag": "".join(c if c.isalnum() or c in "-_" else "_" for c in tag),
+            "n": int(n),
+            "input": str(na.input),
+            "output_direct": str(na.output_direct),
+            "source": source,
+            "start_freq_hz": float(na.start_freq),
+            "stop_freq_hz": float(na.stop_freq),
+            "rbw_hz": float(na.rbw),
+            "points": int(na.points),
+            "trace_average": int(na.trace_average),
+            "average_per_point": int(na.average_per_point),
+            "amplitude_v": float(na.amplitude),
+            "logscale": bool(na.logscale),
+            "summary": summary,
+        }
+        if inline:
+            limit = max(100, int(max_points))
+            step = max(1, int(math.ceil(n / limit)))
+            payload["trace"] = {
+                "frequency_hz": freqs[::step].astype(float).tolist(),
+                "magnitude_db": magnitude_db[::step].astype(float).tolist(),
+                "phase_deg": phase_deg[::step].astype(float).tolist(),
+                "decimation": step,
+            }
+        return payload
 
 def channel_stats(y: np.ndarray) -> dict[str, Any]:
     finite = y[np.isfinite(y)]
@@ -630,11 +1375,14 @@ def make_handler(bridge: Bridge) -> type[BaseHTTPRequestHandler]:
             qs = parse_qs(parsed.query)
             try:
                 if parsed.path == "/health":
+                    payload = bridge.health()
+                elif parsed.path == "/shutdown":
                     payload = {
                         "ok": True,
-                        "message": "pyrpl_live_bridge is running",
-                        "safe_params": sorted(SAFE_PARAMS),
+                        "message": "bridge shutdown requested",
+                        "bridge": bridge.health().get("bridge"),
                     }
+                    threading.Thread(target=self.server.shutdown, daemon=True).start()
                 elif parsed.path == "/get":
                     param = qs.get("param", [""])[0]
                     payload = bridge.submit(lambda: bridge.get_param(param))
@@ -651,50 +1399,150 @@ def make_handler(bridge: Bridge) -> type[BaseHTTPRequestHandler]:
                         "no",
                         "off",
                     }
-                    payload = bridge.submit(
-                        lambda: bridge.capture_scope(tag, timeout, make_plot),
-                        wait_timeout=max(10.0, timeout + 5.0),
-                    )
-                elif parsed.path == "/lock/catch":
-                    tag = qs.get("tag", ["catch_lock"])[0]
-                    branch = qs.get("branch", ["right"])[0]
-                    p_gain = float(qs.get("p", ["-0.002"])[0])
-                    i_gain = float(qs.get("i", ["-0.004632"])[0])
-                    timeout = float(qs.get("timeout", ["5"])[0])
-                    monitor_seconds = float(qs.get("monitor", ["3"])[0])
-                    monitor_interval = float(qs.get("interval", ["0.1"])[0])
-                    handoff_offset = float(qs.get("offset", ["0"])[0])
-                    timed = qs.get("timed", ["false"])[0].strip().lower() in {
+                    save = qs.get("save", ["true"])[0].strip().lower() not in {
+                        "0",
+                        "false",
+                        "no",
+                        "off",
+                    }
+                    inline = qs.get("inline", ["false"])[0].strip().lower() in {
                         "1",
                         "true",
                         "yes",
                         "on",
                     }
-                    phase_delay_offset = float(qs.get("phase_offset", ["0"])[0])
+                    max_points = int(qs.get("max_points", ["1500"])[0])
                     payload = bridge.submit(
-                        lambda: bridge.catch_lock(
-                            tag=tag,
-                            branch=branch,
-                            p_gain=p_gain,
-                            i_gain=i_gain,
-                            timeout=timeout,
-                            monitor_seconds=monitor_seconds,
-                            monitor_interval=monitor_interval,
-                            handoff_offset=handoff_offset,
-                            timed=timed,
-                            phase_delay_offset=phase_delay_offset,
+                        lambda: bridge.capture_scope(
+                            tag,
+                            timeout,
+                            make_plot,
+                            save=save,
+                            inline=inline,
+                            max_points=max_points,
                         ),
-                        wait_timeout=max(15.0, timeout + monitor_seconds + 8.0),
+                        wait_timeout=max(10.0, timeout + 5.0),
                     )
+                elif parsed.path == "/spectrum/single":
+                    tag = qs.get("tag", ["spectrum_capture"])[0]
+                    timeout = float(qs.get("timeout", ["15"])[0])
+                    load_ohm = float(qs.get("load_ohm", ["50"])[0])
+                    save_csv = qs.get("save_csv", ["false"])[0].strip().lower() in {
+                        "1",
+                        "true",
+                        "yes",
+                        "on",
+                    }
+                    save_npz = qs.get("save", ["true"])[0].strip().lower() not in {
+                        "0",
+                        "false",
+                        "no",
+                        "off",
+                    }
+                    inline = qs.get("inline", ["false"])[0].strip().lower() in {
+                        "1",
+                        "true",
+                        "yes",
+                        "on",
+                    }
+                    acquire = qs.get("acquire", ["true"])[0].strip().lower() not in {
+                        "0",
+                        "false",
+                        "no",
+                        "off",
+                    }
+                    max_points = int(qs.get("max_points", ["1500"])[0])
+                    payload = bridge.submit(
+                        lambda: bridge.capture_spectrum(
+                            tag,
+                            timeout,
+                            load_ohm,
+                            save_csv,
+                            save_npz=save_npz,
+                            inline=inline,
+                            max_points=max_points,
+                            acquire=acquire,
+                        ),
+                        wait_timeout=max(20.0, timeout + 10.0),
+                    )
+                elif parsed.path == "/networkanalyzer/single":
+                    tag = qs.get("tag", ["network_analyzer_preview"])[0]
+                    timeout = float(qs.get("timeout", ["20"])[0])
+                    inline = qs.get("inline", ["true"])[0].strip().lower() in {
+                        "1",
+                        "true",
+                        "yes",
+                        "on",
+                    }
+                    acquire = qs.get("acquire", ["true"])[0].strip().lower() not in {
+                        "0",
+                        "false",
+                        "no",
+                        "off",
+                    }
+                    max_points = int(qs.get("max_points", ["1200"])[0])
+                    payload = bridge.submit(
+                        lambda: bridge.capture_network_analyzer(
+                            tag,
+                            timeout,
+                            inline=inline,
+                            max_points=max_points,
+                            acquire=acquire,
+                        ),
+                        wait_timeout=max(30.0, timeout + 10.0),
+                    )
+                elif parsed.path == "/spectrum/power_correction":
+                    enabled = (
+                        parse_bool(qs["enabled"][0])
+                        if "enabled" in qs
+                        else None
+                    )
+                    highz_correction_db = (
+                        float(qs["highz_correction_db"][0])
+                        if "highz_correction_db" in qs
+                        else None
+                    )
+                    external_gain_db = (
+                        float(qs["external_gain_db"][0])
+                        if "external_gain_db" in qs
+                        else None
+                    )
+                    load_ohm = (
+                        float(qs["load_ohm"][0])
+                        if "load_ohm" in qs
+                        else None
+                    )
+                    if any(
+                        value is not None
+                        for value in (
+                            enabled,
+                            highz_correction_db,
+                            external_gain_db,
+                            load_ohm,
+                        )
+                    ):
+                        payload = bridge.submit(
+                            lambda: bridge.set_spectrum_power_correction(
+                                enabled=enabled,
+                                highz_correction_db=highz_correction_db,
+                                external_gain_db=external_gain_db,
+                                load_ohm=load_ohm,
+                            )
+                        )
+                    else:
+                        payload = bridge.submit(bridge.get_spectrum_power_correction)
                 else:
                     payload = {
                         "ok": True,
                         "usage": {
                             "health": "/health",
+                            "shutdown": "/shutdown",
                             "get": "/get?param=scope.duration",
                             "set": "/set?param=scope.duration&value=0.1",
                             "scope_single": "/scope/single?tag=test",
-                            "catch_lock": "/lock/catch?tag=test&branch=right&p=-0.002&i=-0.004632",
+                            "spectrum_single": "/spectrum/single?tag=test",
+                            "networkanalyzer_single": "/networkanalyzer/single?tag=test",
+                            "spectrum_power_correction": "/spectrum/power_correction?external_gain_db=23",
                         },
                     }
                 status = 200 if payload.get("ok") else 400
@@ -713,16 +1561,53 @@ def main() -> int:
     import pyrpl
     from qtpy import QtCore
 
-    print(f"Starting PyRPL {pyrpl.__version__} config={args.config!r}")
+    patch_spectrum_power_units(
+        load_ohm=args.spectrum_load_ohm,
+        correction_enabled=args.spectrum_power_correction_enabled,
+        highz_correction_db=args.spectrum_highz_correction_db,
+        external_gain_db=args.spectrum_external_gain_db,
+    )
+    if not args.headless:
+        patch_scope_mean_display()
+    print(f"Starting PyRPL {pyrpl.__version__} config={args.config!r} headless={args.headless}")
     print(f"Connecting to Red Pitaya at {args.hostname}")
     p = pyrpl.Pyrpl(
         config=args.config,
         hostname=args.hostname,
-        gui=True,
+        gui=not args.headless,
         loglevel=args.loglevel,
     )
+    p.spectrumanalyzer.external_gain_db = args.spectrum_external_gain_db
+    if not args.headless:
+        try:
+            p.rp.scope.ch1_power_response_v_per_w = args.scope_ch1_response_v_per_w
+            p.rp.scope.ch2_power_response_v_per_w = args.scope_ch2_response_v_per_w
+        except Exception as exc:
+            print(f"WARN could not apply scope power responses: {exc}", flush=True)
+    power_correction = spectrum_power_correction_state(p.spectrumanalyzer)
+    print(f"Spectrum dBm units use {args.spectrum_load_ohm:g} ohm equivalent load")
+    print(
+        "Spectrum dBm correction: "
+        f"enabled={power_correction['enabled']} "
+        f"high-Z={power_correction['highz_correction_db']:.3f} dB "
+        f"external_gain={power_correction['external_gain_db']:.3f} dB "
+        f"total_subtracted={power_correction['total_subtracted_db']:.3f} dB"
+    )
 
-    bridge = Bridge(p, allow_risky=args.allow_risky)
+    bridge = Bridge(
+        p,
+        allow_risky=args.allow_risky,
+        metadata={
+            "config": args.config,
+            "hostname": args.hostname,
+            "headless": args.headless,
+            "listen_host": args.listen_host,
+            "listen_port": args.listen_port,
+            "loglevel": args.loglevel,
+            "scope_ch1_response_v_per_w": args.scope_ch1_response_v_per_w,
+            "scope_ch2_response_v_per_w": args.scope_ch2_response_v_per_w,
+        },
+    )
     server = ThreadingHTTPServer(
         (args.listen_host, args.listen_port), make_handler(bridge)
     )

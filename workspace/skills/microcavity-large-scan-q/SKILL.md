@@ -88,30 +88,27 @@ Accepted runs should be standardized as:
 Q/
   raw.npz
   acquisition.json
-  dispersion.png
-  d2_fit.png
   family_points.csv
   q_by_mode.csv
   q_trend.png
-  mode_spectra.png
+  interactive_q.html
   evidence/
     processing_YYYYMMDD_HHMMSS/
       dip_table.csv
       process_summary.json
       dispersion_summary.json
       q_summary.json
-      q_fit_examples.png
-      raw_health.png
 ```
 
-The `Q/` root is for formal display and daily use. `Q/evidence/` is for traceability and debugging. Cavity cards and README links should read formal display files from the `Q/` root.
+The `Q/` root is for formal display and daily use. `Q/evidence/` is for traceability and debugging. Cavity cards and README links should read formal display files from the `Q/` root. The minimum routine PNG is `Q/q_trend.png`; detailed D2, one-FSR, and local-Q review belongs in `Q/interactive_q.html`.
 
 Formal display contract:
 
-- `dispersion.png`: common-coordinate family map plus representative one-FSR spectrum panel.
-- `d2_fit.png`: one panel per accepted family plus representative one-FSR spectrum panel.
-- right-side one-FSR panel must show normalized CH2 spectrum and assigned family markers, not a point-only fallback.
-- `mode_spectra.png`: local full-resolution normalized line shapes with display label and mode index in each panel title.
+- `interactive_q.html`: representative one-FSR raw normalized CH2 trace with assigned family markers, family-selectable D2 fits, family/resonance-selectable local Q windows, and Q metric trends versus wavelength.
+- The representative one-FSR panel should choose the nearest mode bin that contains all assigned families; if no single bin contains all families, the review metadata must list missing labels.
+- The one-FSR/local trace payload may be decimated for interaction speed, but it must keep dips and family markers interpretable. Do not embed full dense large-scan traces merely to imitate a static PNG.
+- `q_trend.png`: compact static snapshot for card, README, and quick scan. It is the only required PNG in routine Q output.
+- After any plotting or family-assignment code change, or after an escalation caused by family count, spacing, residual, or missing branches, inspect `Q/interactive_q.html` and `Q/q_trend.png` before accepting the card.
 
 ## Power And Cards
 
@@ -123,6 +120,7 @@ For each cavity:
 - total throughput = `P_out / 100 uW`;
 - equivalent single-ended insertion loss = `-10 log10(sqrt(throughput))` under symmetric input/output coupling;
 - create or refresh a `cavity_card.html` even if the cavity is skipped, damaged, low-power, or no formal Q is available.
+- The fixed card layout is: left identity/summary table, middle `Q/q_trend.png`, right sensitivity placeholder or sensitivity figure, and a bottom row linking to `Q/interactive_q.html` and future `sensitivity/interactive_sensitivity.html`.
 
 When the user provides a die-level output-power pass, immediately write the powers to a die-level source table such as `output_power_log.csv` in the die result directory and create or refresh all `c1`-`c9` cards with `--output-power-uw` before starting Q scans. Do not wait until die close-out to backfill insertion loss. The large-scan wrapper preserves an existing card throughput field when refreshing Q results, so early power cards are safe to create before formal Q data exists.
 
@@ -176,7 +174,7 @@ README structure:
 - design information and data state;
 - unified mode-family map;
 - photos;
-- one compact per-cavity entry/status table combining gap, state, out-coupled power, throughput/loss, card, dispersion, D2 fit, and Q trend;
+- one compact per-cavity entry/status table combining gap, state, out-coupled power, throughput/loss, card, interactive Q, Q trend snapshot, and sensitivity status;
 - one horizontal table per unified family;
 - extra/sparse/unreliable branches;
 - gap-group observations;

@@ -1,0 +1,34 @@
+{
+  "rp_hostname": "RP-f0f213",
+  "default_laser_type": "weiyuan",
+  "weiyuan_port": "COM5",
+  "toptica_port": "COM3",
+  "toptica_host": "192.168.1.104",
+  "toptica_python": "%USERPROFILE%\\toptica_lasersdk_venv\\Scripts\\python.exe",
+  "bridge_base": "http://127.0.0.1:7870",
+  "listen_host": "127.0.0.1",
+  "listen_port": 7880,
+  "scope_type": "none",
+  "scope_resource": "TCPIP::192.168.1.8::INSTR",
+  "auto_start_bridge": true,
+  "open_pyrpl_gui": false,
+  "photodetector": {
+    "model": "KY-PRM-10M-I-FC",
+    "scope_response_v_per_w": 3220.13,
+    "note": "Calibrated RP DC-path response after the current DC attenuation/splitting chain. Set null to estimate from model + dc_path."
+  },
+  "rp_frontend": {
+    "dc_path": {
+      "attenuator_db": 20.0,
+      "note": "Nominal DC attenuation before RP input; explicit photodetector.scope_response_v_per_w overrides this estimate."
+    },
+    "rf_path": {
+      "bias_tee_enabled": true,
+      "bias_tee_model": "ZFBT-4R2GW+",
+      "amplifier_enabled": true,
+      "amplifier_model": "ZX60-43-S+",
+      "external_gain_db": 23.0,
+      "note": "Measured total RF gain seen by RP/FPS4 for bias tee + amplifier; used as spectrum external_gain_db."
+    }
+  }
+}

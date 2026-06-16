@@ -20,6 +20,31 @@ For each new group:
 
 Do not just accumulate files. Each accepted group needs a short judgment: what it shows, what it does not prove, and what should happen next.
 
+## Ordinary Exploratory Experiment Style
+
+For ordinary exploratory experiments, unlike highly standardized wafer large-scan Q measurement, keep live recording lightweight and user-confirmed.
+
+- Default to acquiring clean data and minimal metadata first; do not rush to write formal notes, daily entries, or conclusions while the user is still exploring.
+- Treat raw data and essential figures as the main experimental memory. Text records are secondary and should stay short.
+- Do not create a formal record for every trial, retake, setting tweak, or temporary plot. Wait until the user explicitly says which data groups, comparisons, figures, or conclusions should be kept.
+- During live work, focus on judging whether each group is valid, what trend or anomaly it shows, and what the smallest next check should be.
+- For temporary inspection, prefer reusable interactive/preview plots over saving many similar PNGs. Save final figures only after the user says the view is worth keeping.
+- Temporary exploratory HTML plots must be written as replaceable previews first, normally under `preview/current_*.html`, not directly into a final `figures/` path. Unless the user asks for a static quicklook, these previews should use the established interactive review behavior: hover readout, left-drag box zoom, mouse-wheel zoom, Shift-drag pan, double-click reset, and trace toggles when multiple curves are shown. For dense multi-curve spectra, hover should read all visible curves at the cursor frequency instead of requiring the mouse to land exactly on one sampled point. Use Arial for all English labels/ticks/legends and keep preview fonts large enough for comfortable live inspection, with axis labels and tick labels no smaller than the current interactive Q review style.
+- When the user asks to record a result, write a compact Chinese note by default: what was done, key conditions, useful data groups, approximate conclusion, limitations, and next check.
+
+## Dense Spectrum Data Policy
+
+For dense scope/spectrum captures such as Red Pitaya/PyRPL, oscilloscope FFT, spectrum-analyzer traces, or other high-point-count readouts, keep one full-resolution machine-readable source of truth per accepted group.
+
+- Use raw `.npz` plus metadata `.json` as the default full-trace record when the acquisition script can save structured arrays and settings.
+- For PyRPL/Red Pitaya spectrum captures, the default raw `.npz` must contain only the frequency axis and two `input1` vertical arrays: `input1_vpk2` from `spectrumanalyzer.single()` and `input1_dbm_per_hz` matching the current corrected dBm/Hz display. Do not save `input2`, `cross_real`, `cross_imag`, or parallel unit-converted copies unless the user explicitly requests those channels or a specific export.
+- Treat dBm, dBm/Hz, V/√Hz, 50 Ω equivalent power, and similar quantities as analysis/view-layer conversions derived from the raw trace plus metadata such as RBW and load assumption. Do not store four unit-converted full traces by default.
+- For RP/PyRPL dBm and dBm/Hz live display, apply the fixed RP high-Z input correction of `6.0206 dB` by default when converting the 1 MΩ RP input voltage to a 50 Ω matched-power display. For external RF-chain gain, prefer the spectrum analyzer GUI field `external_gain_db`; keep this as display/metadata state and do not bake corrected unit traces into the raw `.npz`.
+- Generate user-facing figures directly from the raw `.npz` and metadata; do not create a full-length processed `.csv` just to draw plots.
+- Put only compact summaries in processed records by default: key marker values, band medians, units, calibration assumptions, and file paths.
+- Export a full processed `.csv` only when the user explicitly asks for spreadsheet/Origin use, when another tool cannot read `.npz`, or when a formal downstream analysis script requires CSV input.
+- When replacing a measurement, overwrite or refresh the current accepted group's canonical raw/metadata/figures and record the source timestamp in metadata; do not keep parallel duplicate full traces unless the user asks to compare retakes.
+
 ## Script Reuse
 
 Before writing new code:
@@ -90,6 +115,11 @@ Mark data as invalid or exploratory when:
 Invalid data may stay in `session.md` only as a caution, not as evidence for a conclusion.
 
 ## Measurement Records
+
+Experiment `README.md`, `daily/*.md`, and live measurement notes should be
+written in Chinese by default unless the user explicitly asks for English. Keep
+instrument command tokens, file names, units, and code identifiers in their
+original form.
 
 For each accepted group, write:
 
