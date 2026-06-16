@@ -247,7 +247,7 @@ class RohdeSchwarzRte:
         self,
         *,
         trigger_channel: int = 4,
-        trigger_level_v: float = 2.5,
+        trigger_level_v: float = 0.0,
         trigger_slope: str = "negative",
         trigger_mode: str = "auto",
         time_scale_s_per_div: float = 1e-3,
@@ -383,7 +383,7 @@ def parse_args(argv: Iterable[str]) -> argparse.Namespace:
     parser.add_argument("--trigger-level-v", type=float, default=1.0)
     parser.add_argument("--trigger-slope", choices=["positive", "negative"], default="positive")
     parser.add_argument("--no-restore-fine-scope", action="store_true")
-    parser.add_argument("--fine-trigger-level-v", type=float, default=2.5)
+    parser.add_argument("--fine-trigger-level-v", type=float, default=0.0)
     parser.add_argument("--fine-arc-factor-v-per-v", type=float, default=25.0)
     parser.add_argument("--fine-center-nm", type=float, default=1550.0)
     parser.add_argument("--keep-arc-factor-during-large-scan", action="store_true")

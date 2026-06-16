@@ -121,6 +121,10 @@ def existing_cell(card_text: str, label: str) -> str | None:
     return re.sub(r"\s+", " ", match.group(1)).strip()
 
 
+def read_json(path: Path) -> dict[str, object]:
+    return json.loads(path.read_text(encoding="utf-8-sig"))
+
+
 def file_uri(path: Path) -> str:
     absolute = path.resolve()
     return "file:///" + quote(str(absolute).replace("\\", "/"), safe="/:")
@@ -213,7 +217,7 @@ def acquisition_run_text(q_dir: Path) -> str:
     path = q_dir / "acquisition.json"
     if not path.exists():
         return "not measured"
-    data = json.loads(path.read_text(encoding="utf-8"))
+    data = read_json(path)
     created = str(data.get("created_at", ""))[:16].replace("T", " ")
     sample_rate = float(data.get("actual_sample_rate_hz", data.get("config", {}).get("sample_rate_hz", 0.0)))
     if sample_rate:
@@ -230,8 +234,8 @@ def mode_rows_html(q_dir: Path, radius_um: float | None) -> str:
     if not dispersion_path.exists() or not q_summary_path.exists():
         return '<tr><td colspan="5">analysis pending</td></tr>'
 
-    dispersion = json.loads(dispersion_path.read_text(encoding="utf-8"))
-    q_summary = json.loads(q_summary_path.read_text(encoding="utf-8"))
+    dispersion = read_json(dispersion_path)
+    q_summary = read_json(q_summary_path)
     labels = family_labels(q_dir / "family_points.csv")
     q_rows = load_q_rows(q_dir / "q_by_mode.csv")
     radius_m = radius_um * 1e-6 if radius_um is not None else None
@@ -281,8 +285,8 @@ def auto_note(q_dir: Path) -> str:
     q_summary_path = evidence_dir / "q_summary.json"
     if not dispersion_path.exists() or not q_summary_path.exists():
         return "Analysis pending."
-    dispersion = json.loads(dispersion_path.read_text(encoding="utf-8"))
-    q_summary = json.loads(q_summary_path.read_text(encoding="utf-8"))
+    dispersion = read_json(dispersion_path)
+    q_summary = read_json(q_summary_path)
     q_fit = f"Q fit {q_summary.get('ok_count', 0)}/{q_summary.get('mode_count', 0)}"
     branch_log = dispersion.get("branch_extension_log", [])
     branch_text = ""

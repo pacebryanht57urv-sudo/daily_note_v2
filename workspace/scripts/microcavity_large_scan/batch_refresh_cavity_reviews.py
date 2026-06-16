@@ -113,7 +113,7 @@ def patch_summary_paths(q_dir: Path) -> None:
         path = evidence_dir / name
         if not path.exists():
             continue
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
         data.update(patch)
         path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 

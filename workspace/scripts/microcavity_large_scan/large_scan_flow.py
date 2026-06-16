@@ -187,6 +187,9 @@ def update_summary_paths(q_dir: Path, evidence_dir: Path) -> None:
         },
         "q_summary.json": {
             "q_table": str(q_dir / "q_by_mode.csv"),
+            "best_lock_candidate_json": str(q_dir / "best_lock_candidate.json")
+            if (q_dir / "best_lock_candidate.json").exists()
+            else None,
             "trend_figure": str(q_dir / "q_trend.png"),
             "fit_examples_figure": None,
             "local_dip_mosaic_figure": None,
@@ -386,6 +389,9 @@ def standardize_outputs(q_dir: Path, stem: str, *, depth_threshold: float) -> Pa
         f"{stem}_large_scan_q_by_family.csv": "q_by_mode.csv",
         f"{stem}_large_scan_q_trends.png": "q_trend.png",
     }
+    optional_stable = {
+        f"{stem}_best_lock_candidate.json": "best_lock_candidate.json",
+    }
     evidence = {
         f"{stem}_dip_table.csv": "dip_table.csv",
         f"{stem}_process_summary.json": "process_summary.json",
@@ -400,6 +406,8 @@ def standardize_outputs(q_dir: Path, stem: str, *, depth_threshold: float) -> Pa
             move_file(src, dst)
         elif not dst.exists():
             raise RuntimeError(f"Missing expected file: {src}")
+    for src_name, dst_name in optional_stable.items():
+        move_file_if_exists(q_dir / src_name, q_dir / dst_name)
     for src_name, dst_name in evidence.items():
         src = q_dir / src_name
         dst = evidence_dir / dst_name
@@ -410,8 +418,13 @@ def standardize_outputs(q_dir: Path, stem: str, *, depth_threshold: float) -> Pa
     for src_name, dst_name in optional_evidence.items():
         move_file_if_exists(q_dir / src_name, evidence_dir / dst_name)
 
+    protected_stable = {q_dir / name for name in stable.values()}
+    protected_stable.update(q_dir / name for name in optional_stable.values())
+    protected_resolved = {path.resolve() for path in protected_stable if path.exists()}
     for path in q_dir.glob(f"{stem}*"):
         if path.is_file():
+            if path.resolve() in protected_resolved:
+                continue
             path.unlink()
     update_summary_paths(q_dir, evidence_dir)
     return evidence_dir
@@ -521,6 +534,16 @@ def refresh_cavity_card(
     )
 
 
+def refresh_interactive_q_review(q_dir: Path) -> float:
+    return run_command(
+        [
+            sys.executable,
+            str(SCRIPT_DIR / "write_interactive_q_review.py"),
+            str(q_dir.parent),
+        ]
+    )
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run acquisition, analysis, Q fitting, and card generation for one cavity.")
     parser.add_argument("--chip", default=default_chip(), help=f"Chip/sample id. Defaults to ${CHIP_ENV} or chip7.")
@@ -545,6 +568,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     parser.add_argument("--radius-um", type=float, default=None, help="Optional cavity radius for non-chip7 cards.")
     parser.add_argument("--gap-um", type=float, default=None, help="Optional coupling gap for non-chip7 cards.")
+    parser.add_argument("--laser-port", default="COM3", help="TOPTICA serial port forwarded to acquire_large_scan.py.")
+    parser.add_argument(
+        "--scope-resource",
+        default="TCPIP::192.168.1.8::INSTR",
+        help="Oscilloscope VISA resource forwarded to acquire_large_scan.py.",
+    )
     parser.add_argument("--sample-rate-hz", type=float, default=200_000.0)
     parser.add_argument("--depth-threshold", type=float, default=0.4)
     parser.add_argument("--storage-format", choices=["npz", "npz-compressed"], default="npz")
@@ -598,6 +627,10 @@ def main(argv: list[str]) -> int:
         "2",
         "--sample-rate-hz",
         f"{args.sample_rate_hz:g}",
+        "--laser-port",
+        args.laser_port,
+        "--scope-resource",
+        args.scope_resource,
         "--record-seconds",
         "20",
         "--storage-format",
@@ -670,7 +703,9 @@ def main(argv: list[str]) -> int:
         meta = assert_acquisition_gates(npz_path, meta_path)
         evidence_dir = standardize_outputs(q_dir, stem, depth_threshold=args.depth_threshold)
         verdict = build_onsite_verdict(q_dir, evidence_dir, phase_seconds={"standardize_only": 0.0})
-        refresh_cavity_card(args, results_root, card_extra_args=card_extra_args)
+        phase_seconds = {"standardize_only": 0.0}
+        phase_seconds["interactive_q_review"] = refresh_interactive_q_review(q_dir)
+        phase_seconds["cavity_card"] = refresh_cavity_card(args, results_root, card_extra_args=card_extra_args)
         print(
             json.dumps(
                 {
@@ -704,6 +739,7 @@ def main(argv: list[str]) -> int:
         )
         evidence_dir = standardize_outputs(q_dir, stem, depth_threshold=args.depth_threshold)
         verdict = build_onsite_verdict(q_dir, evidence_dir, phase_seconds=phase_seconds)
+        phase_seconds["interactive_q_review"] = refresh_interactive_q_review(q_dir)
         phase_seconds["cavity_card"] = refresh_cavity_card(args, results_root, card_extra_args=card_extra_args)
         print(
             json.dumps(
@@ -762,13 +798,7 @@ def main(argv: list[str]) -> int:
     meta = assert_acquisition_gates(npz_path, meta_path)
     evidence_dir = standardize_outputs(q_dir, stem, depth_threshold=args.depth_threshold)
     verdict = build_onsite_verdict(q_dir, evidence_dir, phase_seconds=phase_seconds)
-    phase_seconds["interactive_q_review"] = run_command(
-        [
-            sys.executable,
-            str(SCRIPT_DIR / "write_interactive_q_review.py"),
-            str(q_dir.parent),
-        ]
-    )
+    phase_seconds["interactive_q_review"] = refresh_interactive_q_review(q_dir)
     phase_seconds["cavity_card"] = refresh_cavity_card(args, results_root, card_extra_args=card_extra_args)
     print(
         json.dumps(

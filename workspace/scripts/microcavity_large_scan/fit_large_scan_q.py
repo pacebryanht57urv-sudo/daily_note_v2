@@ -279,6 +279,111 @@ def write_q_table(path: Path, rows: list[dict[str, float | str]]) -> None:
         writer.writerows(rows)
 
 
+def finite_float(value: object) -> float | None:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if math.isfinite(parsed) else None
+
+
+def candidate_from_q_row(
+    row: dict[str, float | str],
+    *,
+    metric: str,
+    selection_metric_value: float,
+    extra: dict[str, object] | None = None,
+) -> dict[str, object]:
+    candidate = {
+        "selection_metric": metric,
+        "selection_metric_value": selection_metric_value,
+        "family": str(row.get("family", "")),
+        "family_label": str(row.get("family_label", row.get("family", ""))),
+        "mode_number": int(float(row.get("mode_number", 0))),
+        "wavelength_nm": finite_float(row.get("wavelength_nm")),
+        "Q0": finite_float(row.get("Q0")),
+        "Q1": finite_float(row.get("Q1")),
+        "QL": finite_float(row.get("QL")),
+        "depth": finite_float(row.get("depth")),
+        "transmission": finite_float(row.get("transmission")),
+        "linewidth_loaded_mhz": finite_float(row.get("linewidth_loaded_mhz")),
+        "sample_index": int(float(row.get("sample_index", 0))),
+        "time_s": finite_float(row.get("time_s")),
+        "fit_status": str(row.get("fit_status", "")),
+        "coupling_note": str(row.get("coupling_note", "")),
+    }
+    if extra:
+        candidate.update(extra)
+    return candidate
+
+
+def select_best_lock_candidate(
+    rows: list[dict[str, float | str]],
+    *,
+    metric: str = "Q0",
+) -> dict[str, object] | None:
+    candidates: list[tuple[float, dict[str, float | str]]] = []
+    for row in rows:
+        if row.get("fit_status") != "ok":
+            continue
+        score = finite_float(row.get(metric))
+        wavelength_nm = finite_float(row.get("wavelength_nm"))
+        if score is None or wavelength_nm is None:
+            continue
+        candidates.append((score, row))
+    if not candidates:
+        return None
+
+    score, row = max(candidates, key=lambda item: item[0])
+    return candidate_from_q_row(row, metric=metric, selection_metric_value=score)
+
+
+def select_nearest_wavelength_best_q_candidate(
+    rows: list[dict[str, float | str]],
+    *,
+    target_wavelength_nm: float = 1550.0,
+    metric: str = "Q0",
+) -> dict[str, object] | None:
+    candidates: list[tuple[float, float, dict[str, float | str]]] = []
+    for row in rows:
+        if row.get("fit_status") != "ok":
+            continue
+        wavelength_nm = finite_float(row.get("wavelength_nm"))
+        score = finite_float(row.get(metric))
+        if wavelength_nm is None or score is None:
+            continue
+        distance_nm = abs(wavelength_nm - target_wavelength_nm)
+        candidates.append((distance_nm, score, row))
+    if not candidates:
+        return None
+
+    distance_nm, score, row = min(candidates, key=lambda item: (item[0], -item[1]))
+    return candidate_from_q_row(
+        row,
+        metric=f"nearest_{target_wavelength_nm:g}nm_then_{metric}",
+        selection_metric_value=score,
+        extra={
+            "target_wavelength_nm": target_wavelength_nm,
+            "distance_to_target_nm": distance_nm,
+        },
+    )
+
+
+def write_best_lock_candidate(path: Path, rows: list[dict[str, float | str]], q_table: Path) -> dict[str, object] | None:
+    candidate = select_best_lock_candidate(rows, metric="Q0")
+    nearest_1550_candidate = select_nearest_wavelength_best_q_candidate(rows, target_wavelength_nm=1550.0, metric="Q0")
+    payload: dict[str, object] = {
+        "ok": candidate is not None,
+        "purpose": "best current-mode lock candidate selected from fitted Q table",
+        "q_table": str(q_table),
+        "selection_metric": "Q0",
+        "candidate": candidate,
+        "nearest_1550_best_q_candidate": nearest_1550_candidate,
+    }
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    return candidate
+
+
 def transmission_trend_metrics(rows: list[dict[str, float | str]]) -> dict[str, float | bool | str]:
     ok = [row for row in rows if row["fit_status"] == "ok"]
     if len(ok) < 3:
@@ -635,6 +740,8 @@ def main(argv: Iterable[str]) -> int:
     family_trends = annotate_family_coupling_notes(q_rows)
     q_table = output_dir / f"{stem}_large_scan_q_by_family.csv"
     write_q_table(q_table, q_rows)
+    best_lock_candidate_path = output_dir / f"{stem}_best_lock_candidate.json"
+    best_lock_candidate = write_best_lock_candidate(best_lock_candidate_path, q_rows, q_table)
     trend_fig = output_dir / f"{stem}_large_scan_q_trends.png"
     plot_q_trends(trend_fig, q_rows)
     examples_fig = output_dir / f"{stem}_large_scan_q_fit_examples.png"
@@ -646,6 +753,8 @@ def main(argv: Iterable[str]) -> int:
         "mode_count": len(q_rows),
         "ok_count": sum(1 for row in q_rows if row["fit_status"] == "ok"),
         "q_table": str(q_table),
+        "best_lock_candidate_json": str(best_lock_candidate_path),
+        "best_lock_candidate": best_lock_candidate,
         "trend_figure": str(trend_fig),
         "fit_examples_figure": str(examples_fig),
         "local_dip_mosaic_figure": str(mosaic_fig),

@@ -48,6 +48,10 @@ def latest_evidence_dir(q_dir: Path) -> Path:
     return max(dirs, key=lambda path: path.stat().st_mtime)
 
 
+def read_json(path: Path) -> dict[str, object]:
+    return json.loads(path.read_text(encoding="utf-8-sig"))
+
+
 def read_csv_rows(path: Path) -> list[dict[str, str]]:
     with path.open(newline="", encoding="utf-8") as handle:
         return list(csv.DictReader(handle))
@@ -111,7 +115,7 @@ def one_fsr_payload(
     )
     assigned = assigned_labels_by_sample(families)
     selected_mode, side_rows, target_labels, plotted_labels = representative_side_panel_rows(common_rows, assigned)
-    if len(side_rows) < 2:
+    if not side_rows:
         return [], [], common_d1_mhz / 1000.0, selected_mode, sorted(target_labels), sorted(plotted_labels)
 
     _time_s, _trigger, trans_raw, _mzi_raw = read_large_scan_data(q_dir / "raw.npz")
@@ -126,9 +130,25 @@ def one_fsr_payload(
     control_samples = np.array([item[0] for item in control], dtype=float)
     control_unfolded = np.array([item[1] for item in control], dtype=float)
     side_samples = np.array([int(float(row["sample_index"])) for row in side_rows], dtype=int)
-    pad = max(10_000, int(0.15 * (int(side_samples.max()) - int(side_samples.min()))))
-    lo = max(0, int(side_samples.min()) - pad)
-    hi = min(len(trans_norm) - 1, int(side_samples.max()) + pad)
+    if len(side_samples) >= 2:
+        pad = max(10_000, int(0.15 * (int(side_samples.max()) - int(side_samples.min()))))
+        lo = max(0, int(side_samples.min()) - pad)
+        hi = min(len(trans_norm) - 1, int(side_samples.max()) + pad)
+    else:
+        center = int(side_samples[0])
+        position = int(np.searchsorted(control_samples, center))
+        prev_sample = int(control_samples[position - 1]) if position > 0 else None
+        next_sample = int(control_samples[position + 1]) if position + 1 < len(control_samples) else None
+        if prev_sample is None and next_sample is None:
+            half_width = max(10_000, len(trans_norm) // 80)
+            lo = max(0, center - half_width)
+            hi = min(len(trans_norm) - 1, center + half_width)
+        else:
+            lo = max(0, (prev_sample + center) // 2 if prev_sample is not None else center - (next_sample - center) // 2)
+            hi = min(
+                len(trans_norm) - 1,
+                (next_sample + center) // 2 if next_sample is not None else center + (center - prev_sample) // 2,
+            )
     sample_grid = np.arange(lo, hi + 1)
     unfolded = np.interp(sample_grid, control_samples, control_unfolded)
     trace_mode = np.rint(unfolded / common_d1_mhz).astype(int)
@@ -164,7 +184,7 @@ def one_fsr_payload(
     return trace, markers, common_d1_mhz / 1000.0, selected_mode, sorted(target_labels), sorted(plotted_labels)
 
 
-def sample_to_wavelength_interpolator(families: dict[str, list[dict[str, float]]]):
+def sample_to_wavelength_calibrator(families: dict[str, list[dict[str, float]]]):
     pairs = sorted(
         (int(float(row["sample_index"])), float(row["wavelength_nm_linear"]))
         for rows in families.values()
@@ -172,7 +192,18 @@ def sample_to_wavelength_interpolator(families: dict[str, list[dict[str, float]]
     )
     samples = np.array([item[0] for item in pairs], dtype=float)
     wavelengths = np.array([item[1] for item in pairs], dtype=float)
-    return samples, wavelengths
+    if len(np.unique(samples)) >= 2:
+        slope, intercept = np.polyfit(samples, wavelengths, 1)
+
+        def calibrated(sample_grid: np.ndarray) -> np.ndarray:
+            return slope * np.asarray(sample_grid, dtype=float) + intercept
+
+        return calibrated
+
+    def interpolated(sample_grid: np.ndarray) -> np.ndarray:
+        return np.interp(np.asarray(sample_grid, dtype=float), samples, wavelengths)
+
+    return interpolated
 
 
 def local_windows(
@@ -187,7 +218,7 @@ def local_windows(
     q_rows = read_csv_rows(q_dir / "q_by_mode.csv")
     _time_s, _trigger, trans_raw, _mzi_raw = read_large_scan_data(q_dir / "raw.npz")
     trans_norm, _baseline = normalize_transmission_with_baseline(trans_raw)
-    control_samples, control_wavelengths = sample_to_wavelength_interpolator(families)
+    sample_to_wavelength = sample_to_wavelength_calibrator(families)
     locals_payload: list[dict[str, object]] = []
     for index, row in enumerate(q_rows):
         if row.get("fit_status") != "ok":
@@ -199,7 +230,7 @@ def local_windows(
         lo = max(0, center - half)
         hi = min(len(trans_norm) - 1, center + half)
         sample_grid = np.arange(lo, hi + 1)
-        wavelengths = np.interp(sample_grid, control_samples, control_wavelengths)
+        wavelengths = sample_to_wavelength(sample_grid)
         data = [[float(x), float(y)] for x, y in zip(wavelengths, trans_norm[sample_grid], strict=False)]
         data = decimate(data, step=trace_step, max_points=max_points)
         locals_payload.append(
@@ -390,7 +421,7 @@ let localChart=null;const localFamily=document.getElementById('localFamily');con
 def build_payload(cavity_dir: Path, *, trace_step: int, max_one_fsr_points: int, max_local_points: int) -> dict[str, object]:
     q_dir = cavity_dir / "Q"
     evidence_dir = latest_evidence_dir(q_dir)
-    dispersion_summary = json.loads((evidence_dir / "dispersion_summary.json").read_text(encoding="utf-8"))
+    dispersion_summary = read_json(evidence_dir / "dispersion_summary.json")
     families, labels = load_family_data(q_dir)
     ordered_labels = []
     for family, label in labels.items():

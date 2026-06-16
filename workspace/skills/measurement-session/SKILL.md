@@ -20,6 +20,18 @@ For each new group:
 
 Do not just accumulate files. Each accepted group needs a short judgment: what it shows, what it does not prove, and what should happen next.
 
+## Ordinary Exploratory Experiment Style
+
+For ordinary exploratory experiments, unlike highly standardized wafer large-scan Q measurement, keep live recording lightweight and user-confirmed.
+
+- Default to acquiring clean data and minimal metadata first; do not rush to write formal notes, daily entries, or conclusions while the user is still exploring.
+- Treat raw data and essential figures as the main experimental memory. Text records are secondary and should stay short.
+- Do not create a formal record for every trial, retake, setting tweak, or temporary plot. Wait until the user explicitly says which data groups, comparisons, figures, or conclusions should be kept.
+- During live work, focus on judging whether each group is valid, what trend or anomaly it shows, and what the smallest next check should be.
+- For temporary inspection, prefer reusable interactive/preview plots over saving many similar PNGs. Save final figures only after the user says the view is worth keeping.
+- Temporary exploratory HTML plots must be written as replaceable previews first, normally under `preview/current_*.html`, not directly into a final `figures/` path. Unless the user asks for a static quicklook, these previews should use the established interactive review behavior: hover readout, left-drag box zoom, mouse-wheel zoom, Shift-drag pan, double-click reset, and trace toggles when multiple curves are shown. For dense multi-curve spectra, hover should read all visible curves at the cursor frequency instead of requiring the mouse to land exactly on one sampled point. Use Arial for all English labels/ticks/legends and keep preview fonts large enough for comfortable live inspection, with axis labels and tick labels no smaller than the current interactive Q review style.
+- When the user asks to record a result, write a compact Chinese note by default: what was done, key conditions, useful data groups, approximate conclusion, limitations, and next check.
+
 ## Dense Spectrum Data Policy
 
 For dense scope/spectrum captures such as Red Pitaya/PyRPL, oscilloscope FFT, spectrum-analyzer traces, or other high-point-count readouts, keep one full-resolution machine-readable source of truth per accepted group.
@@ -103,6 +115,11 @@ Mark data as invalid or exploratory when:
 Invalid data may stay in `session.md` only as a caution, not as evidence for a conclusion.
 
 ## Measurement Records
+
+Experiment `README.md`, `daily/*.md`, and live measurement notes should be
+written in Chinese by default unless the user explicitly asks for English. Keep
+instrument command tokens, file names, units, and code identifiers in their
+original form.
 
 For each accepted group, write:
 
