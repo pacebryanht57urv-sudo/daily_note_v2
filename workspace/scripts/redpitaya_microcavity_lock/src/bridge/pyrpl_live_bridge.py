@@ -13,6 +13,7 @@ import math
 import os
 from pathlib import Path
 import queue
+import sys
 import threading
 import traceback
 import time
@@ -21,6 +22,12 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 import numpy as np
+
+BRIDGE_DIR = Path(__file__).resolve().parent
+SRC_DIR = BRIDGE_DIR.parent
+COMMON_DIR = SRC_DIR / "common"
+if str(COMMON_DIR) not in sys.path:
+    sys.path.insert(0, str(COMMON_DIR))
 
 from data_paths import RESULTS_DIR
 
@@ -33,6 +40,7 @@ SAFE_PARAMS = {
     "scope.threshold",
     "scope.hysteresis",
     "scope.rolling_mode",
+    "scope.run_continuous",
     "scope.average",
     "scope.scope_zero_enabled",
     "scope.ch1_zero_offset_v",
@@ -40,6 +48,17 @@ SAFE_PARAMS = {
     "scope.ch1_power_response_v_per_w",
     "scope.ch2_power_response_v_per_w",
     "scope.scope_power_avg_frames",
+    "networkanalyzer.dbm_display_enabled",
+    "networkanalyzer.dbm_load_ohm",
+    "networkanalyzer.dbm_highz_correction_db",
+    "networkanalyzer.external_gain_db",
+    "networkanalyzer.amplitude",
+    "networkanalyzer.start_freq",
+    "networkanalyzer.stop_freq",
+    "networkanalyzer.points",
+    "networkanalyzer.rbw",
+    "spectrumanalyzer.span",
+    "spectrumanalyzer.trace_average",
 }
 
 
@@ -51,6 +70,7 @@ READABLE_PREFIXES = (
     "asg0.",
     "asg1.",
     "spectrumanalyzer.",
+    "networkanalyzer.",
 )
 
 
@@ -61,6 +81,23 @@ def parse_bool(text: str) -> bool:
     if lowered in {"0", "false", "no", "off"}:
         return False
     raise argparse.ArgumentTypeError(f"Cannot parse boolean value: {text!r}")
+
+
+def json_ready(value: Any) -> Any:
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, (np.floating, np.integer, np.bool_)):
+        return value.item()
+    if isinstance(value, dict):
+        return {str(k): json_ready(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [json_ready(v) for v in value]
+    if hasattr(value, "__iter__") and not isinstance(value, (str, bytes)):
+        try:
+            return [json_ready(v) for v in value]
+        except TypeError:
+            pass
+    return value
 
 
 def parse_args() -> argparse.Namespace:
@@ -123,6 +160,51 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=3.22013e3,
         help="Initial CH2 optical-power response used by the patched scope GUI.",
+    )
+    parser.add_argument(
+        "--scope-zero-enabled",
+        type=parse_bool,
+        default=False,
+        help="Apply configured CH1/CH2 display-zero offsets when opening the patched scope GUI.",
+    )
+    parser.add_argument(
+        "--scope-ch1-zero-offset-v",
+        type=float,
+        default=0.0,
+        help="Initial CH1 display-zero offset in volts, subtracted from the scope GUI trace.",
+    )
+    parser.add_argument(
+        "--scope-ch2-zero-offset-v",
+        type=float,
+        default=0.0,
+        help="Initial CH2 display-zero offset in volts, subtracted from the scope GUI trace.",
+    )
+    parser.add_argument(
+        "--networkanalyzer-dbm-display-enabled",
+        type=parse_bool,
+        default=True,
+        help="Display network-analyzer magnitude as coherent 50-ohm-equivalent dBm.",
+    )
+    parser.add_argument(
+        "--networkanalyzer-load-ohm",
+        type=float,
+        default=50.0,
+        help="Equivalent load resistance for network-analyzer dBm display.",
+    )
+    parser.add_argument(
+        "--networkanalyzer-highz-correction-db",
+        type=float,
+        default=20.0 * math.log10(2.0),
+        help="Display correction for RP 1 Mohm input in network-analyzer dBm mode.",
+    )
+    parser.add_argument(
+        "--networkanalyzer-external-gain-db",
+        type=float,
+        default=None,
+        help=(
+            "External RF gain subtracted from network-analyzer dBm display. "
+            "Defaults to --spectrum-external-gain-db."
+        ),
     )
     return parser.parse_args()
 
@@ -688,6 +770,199 @@ def spectrum_vpk2_to_display_dbm_per_hz(
     return values
 
 
+def networkanalyzer_response_to_dbm(
+    response: np.ndarray | complex | float,
+    *,
+    drive_vpk: float,
+    load_ohm: float,
+    correction_enabled: bool,
+    highz_correction_db: float,
+    external_gain_db: float,
+) -> np.ndarray:
+    """Convert NA coherent voltage transfer response to corrected dBm.
+
+    PyRPL's network analyzer stores a complex voltage ratio:
+    V_read / V_drive. Its GUI normally plots 20log10(abs(response)).
+    This helper multiplies by the configured drive Vpk, converts to Vrms,
+    then reports coherent power in dBm for the chosen equivalent load.
+    """
+    if load_ohm <= 0:
+        raise ValueError("load_ohm must be positive")
+    drive_vpk = max(float(abs(drive_vpk)), np.finfo(float).tiny)
+    values = (
+        20.0 * np.log10(np.abs(response) + np.finfo(float).tiny)
+        + 20.0 * np.log10(drive_vpk / math.sqrt(2.0))
+        - 10.0 * math.log10(load_ohm)
+        + 30.0
+    )
+    if correction_enabled:
+        values -= highz_correction_db + external_gain_db
+    return values
+
+
+def patch_networkanalyzer_dbm_display(
+    *,
+    enabled: bool = True,
+    load_ohm: float = 50.0,
+    highz_correction_db: float = 20.0 * math.log10(2.0),
+    external_gain_db: float = 0.0,
+) -> dict[str, Any]:
+    """Display PyRPL network-analyzer magnitude as coherent dBm."""
+    from pyrpl.attributes import BoolProperty, FloatProperty
+    from pyrpl.software_modules.network_analyzer import NetworkAnalyzer
+
+    if load_ohm <= 0:
+        raise ValueError("--networkanalyzer-load-ohm must be positive")
+    if not all(np.isfinite(value) for value in (highz_correction_db, external_gain_db)):
+        raise ValueError("Network-analyzer display correction values must be finite")
+
+    if not hasattr(NetworkAnalyzer, "dbm_display_enabled"):
+        enabled_property = BoolProperty(
+            default=enabled,
+            doc="Display network-analyzer magnitude as coherent dBm instead of transfer dB.",
+        )
+        enabled_property.name = "dbm_display_enabled"
+        NetworkAnalyzer.dbm_display_enabled = enabled_property
+
+    if not hasattr(NetworkAnalyzer, "dbm_load_ohm"):
+        load_property = FloatProperty(
+            default=load_ohm,
+            min=1e-9,
+            max=1e12,
+            increment=1.0,
+            doc="Equivalent load resistance for coherent network-analyzer dBm display.",
+        )
+        load_property.name = "dbm_load_ohm"
+        NetworkAnalyzer.dbm_load_ohm = load_property
+
+    if not hasattr(NetworkAnalyzer, "dbm_highz_correction_db"):
+        highz_property = FloatProperty(
+            default=highz_correction_db,
+            min=-200.0,
+            max=200.0,
+            increment=1.0,
+            doc="RP high-impedance input correction subtracted in network-analyzer dBm mode.",
+        )
+        highz_property.name = "dbm_highz_correction_db"
+        NetworkAnalyzer.dbm_highz_correction_db = highz_property
+
+    if not hasattr(NetworkAnalyzer, "external_gain_db"):
+        gain_property = FloatProperty(
+            default=external_gain_db,
+            min=-200.0,
+            max=200.0,
+            increment=1.0,
+            doc="External RF-chain gain subtracted in network-analyzer dBm mode.",
+        )
+        gain_property.name = "external_gain_db"
+        NetworkAnalyzer.external_gain_db = gain_property
+
+    desired_attrs = [
+        "dbm_display_enabled",
+        "dbm_load_ohm",
+        "dbm_highz_correction_db",
+        "external_gain_db",
+    ]
+    gui_attrs = list(NetworkAnalyzer._gui_attributes)
+    try:
+        index = gui_attrs.index("amplitude") + 1
+    except ValueError:
+        index = len(gui_attrs)
+    for attr in desired_attrs:
+        if attr not in gui_attrs:
+            gui_attrs.insert(index, attr)
+            index += 1
+    NetworkAnalyzer._gui_attributes = gui_attrs
+
+    if not getattr(NetworkAnalyzer, "_daily_note_dbm_display_patched", False):
+        from pyrpl.widgets.module_widgets.na_widget import NaWidget
+
+        original_init_gui = NaWidget.init_gui
+        original_update_attribute_by_name = NaWidget.update_attribute_by_name
+
+        def update_na_magnitude_title(widget):
+            if bool(getattr(widget.module, "dbm_display_enabled", False)):
+                widget.plot_item.setTitle("Magnitude (dBm)")
+            else:
+                widget.plot_item.setTitle("Magnitude (dB)")
+
+        def init_gui_with_dbm_display(self):
+            original_init_gui(self)
+            update_na_magnitude_title(self)
+
+        def magnitude_with_dbm_display(self, data):
+            if bool(getattr(self.module, "dbm_display_enabled", False)):
+                return networkanalyzer_response_to_dbm(
+                    data,
+                    drive_vpk=float(getattr(self.module, "amplitude", 0.0)),
+                    load_ohm=float(getattr(self.module, "dbm_load_ohm", 50.0)),
+                    correction_enabled=True,
+                    highz_correction_db=float(
+                        getattr(self.module, "dbm_highz_correction_db", 0.0)
+                    ),
+                    external_gain_db=float(getattr(self.module, "external_gain_db", 0.0)),
+                )
+            return 20.0 * np.log10(np.abs(data) + np.finfo(float).tiny)
+
+        def update_attribute_by_name_with_dbm(self, name, new_value_list):
+            original_update_attribute_by_name(self, name, new_value_list)
+            if name in {
+                "dbm_display_enabled",
+                "dbm_load_ohm",
+                "dbm_highz_correction_db",
+                "external_gain_db",
+                "amplitude",
+            }:
+                update_na_magnitude_title(self)
+                try:
+                    for chunk_index in range(len(self.chunks)):
+                        self.update_chunk(chunk_index)
+                except Exception:
+                    pass
+
+        NaWidget.init_gui = init_gui_with_dbm_display
+        NaWidget._magnitude = magnitude_with_dbm_display
+        NaWidget.update_attribute_by_name = update_attribute_by_name_with_dbm
+        NetworkAnalyzer._daily_note_dbm_display_patched = True
+
+    NetworkAnalyzer._daily_note_dbm_display_default_enabled = enabled
+    NetworkAnalyzer._daily_note_dbm_load_ohm = load_ohm
+    NetworkAnalyzer._daily_note_dbm_highz_correction_db = highz_correction_db
+    NetworkAnalyzer._daily_note_external_gain_default_db = external_gain_db
+    return networkanalyzer_power_state()
+
+
+def networkanalyzer_power_state(networkanalyzer: Any | None = None) -> dict[str, Any]:
+    from pyrpl.software_modules.network_analyzer import NetworkAnalyzer
+
+    if networkanalyzer is not None:
+        enabled = bool(getattr(networkanalyzer, "dbm_display_enabled", True))
+        load = float(getattr(networkanalyzer, "dbm_load_ohm", 50.0))
+        highz = float(getattr(networkanalyzer, "dbm_highz_correction_db", 0.0))
+        gain = float(getattr(networkanalyzer, "external_gain_db", 0.0))
+    else:
+        enabled = bool(
+            getattr(NetworkAnalyzer, "_daily_note_dbm_display_default_enabled", True)
+        )
+        load = float(getattr(NetworkAnalyzer, "_daily_note_dbm_load_ohm", 50.0))
+        highz = float(
+            getattr(NetworkAnalyzer, "_daily_note_dbm_highz_correction_db", 0.0)
+        )
+        gain = float(
+            getattr(NetworkAnalyzer, "_daily_note_external_gain_default_db", 0.0)
+        )
+    return {
+        "ok": True,
+        "display_unit": "dBm" if enabled else "dB",
+        "enabled": enabled,
+        "load_ohm": load,
+        "highz_correction_db": highz,
+        "external_gain_db": gain,
+        "total_subtracted_db": highz + gain if enabled else 0.0,
+        "drive_amplitude": "networkanalyzer.amplitude, interpreted as Vpk",
+    }
+
+
 def coerce_value(text: str, current: Any | None) -> Any:
     lowered = text.strip().lower()
     if isinstance(current, bool) or lowered in {"true", "false"}:
@@ -766,7 +1041,7 @@ class Bridge:
         if not dotted.startswith(READABLE_PREFIXES):
             raise ValueError(f"Reading {dotted!r} is not in the bridge allowlist")
         module, attr = self.resolve(dotted)
-        value = getattr(module, attr)
+        value = json_ready(getattr(module, attr))
         return {"ok": True, "param": dotted, "value": value, "type": type(value).__name__}
 
     def set_param(self, dotted: str, raw_value: str) -> dict[str, Any]:
@@ -792,18 +1067,95 @@ class Bridge:
     def get_spectrum_power_correction(self) -> dict[str, Any]:
         return spectrum_power_correction_state(self.p.spectrumanalyzer)
 
+    def get_networkanalyzer_power_display(self) -> dict[str, Any]:
+        return networkanalyzer_power_state(self.p.networkanalyzer)
+
+    def acquisition_settings(self) -> dict[str, Any]:
+        spectrum = self.p.spectrumanalyzer
+        network = self.p.networkanalyzer
+        span_options = [float(v) for v in spectrum.spans]
+        spectrum_rbw_options = [
+            float(v) for v in spectrum.__class__.rbw.valid_frequencies(spectrum)
+        ]
+        network_rbw_options = [
+            float(v) for v in network.__class__.rbw.valid_frequencies(network)
+        ]
+        spectrum_pairs = [
+            {"span_hz": span, "rbw_hz": spectrum_rbw_options[idx]}
+            for idx, span in enumerate(span_options)
+            if idx < len(spectrum_rbw_options)
+        ]
+        return {
+            "ok": True,
+            "spectrum": {
+                "span_hz": float(spectrum.span),
+                "rbw_hz": float(spectrum.rbw),
+                "trace_average": int(spectrum.trace_average),
+                "window": str(spectrum.window),
+                "baseband": bool(spectrum.baseband),
+                "data_length": int(spectrum.data_length),
+                "display_points": int(spectrum._real_points),
+                "span_rbw_options": spectrum_pairs,
+            },
+            "network": {
+                "amplitude_vpk": float(network.amplitude),
+                "start_freq_hz": float(network.start_freq),
+                "stop_freq_hz": float(network.stop_freq),
+                "points": int(network.points),
+                "rbw_hz": float(network.rbw),
+                "average_per_point": int(network.average_per_point),
+                "trace_average": int(network.trace_average),
+                "rbw_options": network_rbw_options,
+            },
+        }
+
+    def stop_acquisitions(self) -> dict[str, Any]:
+        steps: list[dict[str, Any]] = []
+        for name in ("spectrumanalyzer", "networkanalyzer", "scope"):
+            module = getattr(self.p, name, None)
+            if module is None:
+                continue
+            module_steps: list[dict[str, Any]] = []
+            for method_name in ("stop", "pause"):
+                method = getattr(module, method_name, None)
+                if callable(method):
+                    try:
+                        method()
+                        module_steps.append({"action": method_name, "ok": True})
+                        break
+                    except Exception as exc:
+                        module_steps.append({"action": method_name, "ok": False, "error": repr(exc)})
+            for attr_name, value in (
+                ("running", False),
+                ("run_continuous", False),
+                ("continuous", False),
+            ):
+                if hasattr(module, attr_name):
+                    try:
+                        setattr(module, attr_name, value)
+                        module_steps.append({"action": f"set {attr_name}", "ok": True, "value": value})
+                    except Exception as exc:
+                        module_steps.append({"action": f"set {attr_name}", "ok": False, "error": repr(exc)})
+            steps.append({"module": name, "steps": module_steps})
+        return {"ok": True, "message": "best-effort acquisition stop requested", "steps": steps}
+
     def health(self) -> dict[str, Any]:
+        pyrpl_module = sys.modules.get("pyrpl")
         return {
             "ok": True,
             "message": "pyrpl_live_bridge is running",
             "bridge": {
                 "pid": os.getpid(),
+                "python_executable": sys.executable,
+                "pyrpl_version": getattr(pyrpl_module, "__version__", None),
+                "pyrpl_file": getattr(pyrpl_module, "__file__", None),
                 "started_at": self.started_at,
                 "uptime_s": time.time() - self.started_at,
                 "allow_risky": self.allow_risky,
                 **self.metadata,
             },
             "spectrum_power_correction": self.get_spectrum_power_correction(),
+            "networkanalyzer_power_display": self.get_networkanalyzer_power_display(),
             "safe_params": sorted(SAFE_PARAMS),
             "supports_shutdown": True,
         }
@@ -912,6 +1264,7 @@ class Bridge:
         inline: bool = False,
         max_points: int = 1500,
         acquire: bool = True,
+        output_dir: str | None = None,
     ) -> dict[str, Any]:
         if load_ohm <= 0:
             raise ValueError("load_ohm must be positive")
@@ -948,15 +1301,15 @@ class Bridge:
             display_power_correction,
         )
 
-        RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+        output_root = Path(output_dir).expanduser() if output_dir else RESULTS_DIR.resolve()
+        output_root.mkdir(parents=True, exist_ok=True)
         safe_tag = "".join(c if c.isalnum() or c in "-_" else "_" for c in tag)
-        npz_path = RESULTS_DIR / f"{safe_tag}.npz"
-        csv_path = RESULTS_DIR / f"{safe_tag}.csv" if save_csv else None
-        meta_path = RESULTS_DIR / f"{safe_tag}.json"
+        npz_path = output_root / f"{safe_tag}.npz"
+        csv_path = output_root / f"{safe_tag}.csv" if save_csv else None
+        meta_path = output_root / f"{safe_tag}.json"
 
         arrays = {
             "frequency_hz": freqs,
-            "input1_vpk2": input1_vpk2,
             "input1_dbm_per_hz": input1_dbm_per_hz,
         }
         if save_npz:
@@ -964,11 +1317,10 @@ class Bridge:
 
         if csv_path is not None:
             with csv_path.open("w", encoding="utf-8", newline="") as fh:
-                fh.write("frequency_hz,input1_vpk2,input1_dbm_per_hz\n")
+                fh.write("frequency_hz,input1_dbm_per_hz\n")
                 for idx, freq in enumerate(freqs):
                     fh.write(
                         f"{float(freq):.12g},"
-                        f"{float(input1_vpk2[idx]):.12g},"
                         f"{float(input1_dbm_per_hz[idx]):.12g}\n"
                     )
 
@@ -980,11 +1332,6 @@ class Bridge:
         band = finite & (freqs > 0)
         summary = {}
         if np.any(band):
-            summary["input1_vpk2"] = {
-                "median": float(np.nanmedian(input1_vpk2[band])),
-                "min": float(np.nanmin(input1_vpk2[band])),
-                "max": float(np.nanmax(input1_vpk2[band])),
-            }
             summary["input1_dbm_per_hz"] = {
                 "median": float(np.nanmedian(input1_dbm_per_hz[band])),
                 "min": float(np.nanmin(input1_dbm_per_hz[band])),
@@ -995,14 +1342,26 @@ class Bridge:
             "ok": True,
             "tag": safe_tag,
             "path": str(npz_path) if save_npz else None,
+            "output_dir": str(output_root),
             "csv_path": str(csv_path) if csv_path is not None else None,
             "save_csv": save_csv,
             "save_npz": save_npz,
             "metadata_path": str(meta_path) if save_npz else None,
-            "saved_arrays": ["frequency_hz", "input1_vpk2", "input1_dbm_per_hz"],
+            "saved_arrays": ["frequency_hz", "input1_dbm_per_hz"],
             "raw_channel": "input1",
-            "raw_unit": "Vpk^2, from PyRPL spectrumanalyzer.single() before display-unit conversion",
+            "raw_unit_not_saved": "Vpk^2, from PyRPL spectrumanalyzer.single() before display-unit conversion",
             "display_unit_saved": "dBm/Hz",
+            "conversion_note": {
+                "vpk_to_vrms": "Vrms = Vpk / sqrt(2)",
+                "spectrum_vpk2_to_dbm_per_hz": (
+                    "uncorrected_dbm_per_hz = 10*log10((Vpk^2 / (2*R_ohm)) / RBW_Hz / 1e-3); "
+                    "saved input1_dbm_per_hz = uncorrected_dbm_per_hz - total_subtracted_db when correction is enabled"
+                ),
+                "inverse_dbm_per_hz_to_vpk2": (
+                    "Vpk^2 = 2*R_ohm*RBW_Hz*1e-3*10^((saved_dbm_per_hz + total_subtracted_db)/10) "
+                    "when correction is enabled"
+                ),
+            },
             "display_power_correction": display_power_correction,
             "display_load_ohm": display_power_correction["load_ohm"],
             "source": source,
@@ -1019,7 +1378,7 @@ class Bridge:
             "display_input1_baseband": bool(spectrum.display_input1_baseband),
             "display_input2_baseband": bool(spectrum.display_input2_baseband),
             "n": int(len(freqs)),
-            "labels": ["input1_vpk2", "input1_dbm_per_hz"],
+            "labels": ["frequency_hz", "input1_dbm_per_hz"],
             "summary": summary,
         }
         if inline:
@@ -1027,7 +1386,6 @@ class Bridge:
             step = max(1, int(math.ceil(len(freqs) / limit)))
             meta["trace"] = {
                 "frequency_hz": freqs[::step].astype(float).tolist(),
-                "input1_vpk2": input1_vpk2[::step].astype(float).tolist(),
                 "input1_dbm_per_hz": input1_dbm_per_hz[::step].astype(float).tolist(),
                 "decimation": step,
             }
@@ -1039,9 +1397,11 @@ class Bridge:
         self,
         tag: str = "network_analyzer_preview",
         timeout: float = 20.0,
+        save_npz: bool = True,
         inline: bool = True,
         max_points: int = 1200,
         acquire: bool = True,
+        output_dir: str | None = None,
     ) -> dict[str, Any]:
         na = self.p.networkanalyzer
         data = None
@@ -1073,15 +1433,29 @@ class Bridge:
         response = response[:n]
         magnitude = np.abs(response)
         magnitude_db = 20.0 * np.log10(np.maximum(magnitude, 1e-300))
-        phase_deg = np.unwrap(np.angle(response)) * 180.0 / np.pi
-        finite = np.isfinite(freqs) & np.isfinite(magnitude_db) & np.isfinite(phase_deg)
+        na_power = networkanalyzer_power_state(na)
+        magnitude_dbm = networkanalyzer_response_to_dbm(
+            response,
+            drive_vpk=float(na.amplitude),
+            load_ohm=float(na_power["load_ohm"]),
+            correction_enabled=bool(na_power["enabled"]),
+            highz_correction_db=float(na_power["highz_correction_db"]),
+            external_gain_db=float(na_power["external_gain_db"]),
+        )
+        phase_deg = np.angle(response) * 180.0 / np.pi
+        finite = (
+            np.isfinite(freqs)
+            & np.isfinite(magnitude_db)
+            & np.isfinite(magnitude_dbm)
+            & np.isfinite(phase_deg)
+        )
         summary = {}
         if np.any(finite):
             summary = {
-                "magnitude_db": {
-                    "median": float(np.nanmedian(magnitude_db[finite])),
-                    "min": float(np.nanmin(magnitude_db[finite])),
-                    "max": float(np.nanmax(magnitude_db[finite])),
+                "magnitude_dbm": {
+                    "median": float(np.nanmedian(magnitude_dbm[finite])),
+                    "min": float(np.nanmin(magnitude_dbm[finite])),
+                    "max": float(np.nanmax(magnitude_dbm[finite])),
                 },
                 "phase_deg": {
                     "median": float(np.nanmedian(phase_deg[finite])),
@@ -1089,9 +1463,42 @@ class Bridge:
                     "max": float(np.nanmax(phase_deg[finite])),
                 },
             }
+        safe_tag = "".join(c if c.isalnum() or c in "-_" else "_" for c in tag)
+        output_root = Path(output_dir).expanduser() if output_dir else RESULTS_DIR.resolve()
+        npz_path = output_root / f"{safe_tag}.npz"
+        meta_path = output_root / f"{safe_tag}.json"
+        if save_npz:
+            output_root.mkdir(parents=True, exist_ok=True)
+            np.savez(
+                npz_path,
+                frequency_hz=freqs,
+                magnitude_dbm=magnitude_dbm,
+                phase_deg=phase_deg,
+            )
         payload = {
             "ok": True,
-            "tag": "".join(c if c.isalnum() or c in "-_" else "_" for c in tag),
+            "tag": safe_tag,
+            "path": str(npz_path) if save_npz else None,
+            "output_dir": str(output_root),
+            "metadata_path": str(meta_path) if save_npz else None,
+            "save_npz": save_npz,
+            "saved_arrays": [
+                "frequency_hz",
+                "magnitude_dbm",
+                "phase_deg",
+            ],
+            "raw_unit_not_saved": "complex voltage response ratio from PyRPL networkanalyzer.single()",
+            "display_unit_saved": "dBm when networkanalyzer dBm display is enabled, otherwise computed alongside dB",
+            "conversion_note": {
+                "response_to_magnitude_db": "magnitude_db = 20*log10(abs(response_complex))",
+                "response_to_received_vpk": "received_Vpk = abs(response_complex) * networkanalyzer.amplitude_Vpk",
+                "vpk_to_vrms": "Vrms = Vpk / sqrt(2)",
+                "received_vpk_to_dbm": (
+                    "uncorrected_dBm = 10*log10((received_Vpk^2 / (2*R_ohm)) / 1e-3); "
+                    "saved magnitude_dbm = uncorrected_dBm - total_subtracted_db when correction is enabled"
+                ),
+                "phase_deg": "phase_deg = angle(response_complex)*180/pi, wrapped to -180..+180 deg",
+            },
             "n": int(n),
             "input": str(na.input),
             "output_direct": str(na.output_direct),
@@ -1103,7 +1510,9 @@ class Bridge:
             "trace_average": int(na.trace_average),
             "average_per_point": int(na.average_per_point),
             "amplitude_v": float(na.amplitude),
+            "amplitude_unit": "Vpk",
             "logscale": bool(na.logscale),
+            "power_display": na_power,
             "summary": summary,
         }
         if inline:
@@ -1111,10 +1520,12 @@ class Bridge:
             step = max(1, int(math.ceil(n / limit)))
             payload["trace"] = {
                 "frequency_hz": freqs[::step].astype(float).tolist(),
-                "magnitude_db": magnitude_db[::step].astype(float).tolist(),
+                "magnitude_dbm": magnitude_dbm[::step].astype(float).tolist(),
                 "phase_deg": phase_deg[::step].astype(float).tolist(),
                 "decimation": step,
             }
+        if save_npz:
+            meta_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         return payload
 
 def channel_stats(y: np.ndarray) -> dict[str, Any]:
@@ -1423,6 +1834,10 @@ def make_handler(bridge: Bridge) -> type[BaseHTTPRequestHandler]:
                         ),
                         wait_timeout=max(10.0, timeout + 5.0),
                     )
+                elif parsed.path == "/acquisition/settings":
+                    payload = bridge.submit(lambda: bridge.acquisition_settings())
+                elif parsed.path == "/acquisition/stop":
+                    payload = bridge.submit(lambda: bridge.stop_acquisitions())
                 elif parsed.path == "/spectrum/single":
                     tag = qs.get("tag", ["spectrum_capture"])[0]
                     timeout = float(qs.get("timeout", ["15"])[0])
@@ -1452,6 +1867,7 @@ def make_handler(bridge: Bridge) -> type[BaseHTTPRequestHandler]:
                         "off",
                     }
                     max_points = int(qs.get("max_points", ["1500"])[0])
+                    output_dir = qs.get("output_dir", [None])[0]
                     payload = bridge.submit(
                         lambda: bridge.capture_spectrum(
                             tag,
@@ -1462,12 +1878,19 @@ def make_handler(bridge: Bridge) -> type[BaseHTTPRequestHandler]:
                             inline=inline,
                             max_points=max_points,
                             acquire=acquire,
+                            output_dir=output_dir,
                         ),
                         wait_timeout=max(20.0, timeout + 10.0),
                     )
                 elif parsed.path == "/networkanalyzer/single":
                     tag = qs.get("tag", ["network_analyzer_preview"])[0]
                     timeout = float(qs.get("timeout", ["20"])[0])
+                    save_npz = qs.get("save", ["true"])[0].strip().lower() not in {
+                        "0",
+                        "false",
+                        "no",
+                        "off",
+                    }
                     inline = qs.get("inline", ["true"])[0].strip().lower() in {
                         "1",
                         "true",
@@ -1481,13 +1904,16 @@ def make_handler(bridge: Bridge) -> type[BaseHTTPRequestHandler]:
                         "off",
                     }
                     max_points = int(qs.get("max_points", ["1200"])[0])
+                    output_dir = qs.get("output_dir", [None])[0]
                     payload = bridge.submit(
                         lambda: bridge.capture_network_analyzer(
                             tag,
                             timeout,
+                            save_npz=save_npz,
                             inline=inline,
                             max_points=max_points,
                             acquire=acquire,
+                            output_dir=output_dir,
                         ),
                         wait_timeout=max(30.0, timeout + 10.0),
                     )
@@ -1531,6 +1957,35 @@ def make_handler(bridge: Bridge) -> type[BaseHTTPRequestHandler]:
                         )
                     else:
                         payload = bridge.submit(bridge.get_spectrum_power_correction)
+                elif parsed.path == "/networkanalyzer/power_display":
+                    if "enabled" in qs:
+                        payload = bridge.submit(
+                            lambda: bridge.set_param(
+                                "networkanalyzer.dbm_display_enabled", qs["enabled"][0]
+                            )
+                        )
+                    elif "external_gain_db" in qs:
+                        payload = bridge.submit(
+                            lambda: bridge.set_param(
+                                "networkanalyzer.external_gain_db",
+                                qs["external_gain_db"][0],
+                            )
+                        )
+                    elif "highz_correction_db" in qs:
+                        payload = bridge.submit(
+                            lambda: bridge.set_param(
+                                "networkanalyzer.dbm_highz_correction_db",
+                                qs["highz_correction_db"][0],
+                            )
+                        )
+                    elif "load_ohm" in qs:
+                        payload = bridge.submit(
+                            lambda: bridge.set_param(
+                                "networkanalyzer.dbm_load_ohm", qs["load_ohm"][0]
+                            )
+                        )
+                    else:
+                        payload = bridge.submit(bridge.get_networkanalyzer_power_display)
                 else:
                     payload = {
                         "ok": True,
@@ -1543,6 +1998,7 @@ def make_handler(bridge: Bridge) -> type[BaseHTTPRequestHandler]:
                             "spectrum_single": "/spectrum/single?tag=test",
                             "networkanalyzer_single": "/networkanalyzer/single?tag=test",
                             "spectrum_power_correction": "/spectrum/power_correction?external_gain_db=23",
+                            "networkanalyzer_power_display": "/networkanalyzer/power_display",
                         },
                     }
                 status = 200 if payload.get("ok") else 400
@@ -1561,37 +2017,71 @@ def main() -> int:
     import pyrpl
     from qtpy import QtCore
 
+    networkanalyzer_external_gain_db = (
+        args.spectrum_external_gain_db
+        if args.networkanalyzer_external_gain_db is None
+        else args.networkanalyzer_external_gain_db
+    )
     patch_spectrum_power_units(
         load_ohm=args.spectrum_load_ohm,
         correction_enabled=args.spectrum_power_correction_enabled,
         highz_correction_db=args.spectrum_highz_correction_db,
         external_gain_db=args.spectrum_external_gain_db,
     )
+    patch_networkanalyzer_dbm_display(
+        enabled=args.networkanalyzer_dbm_display_enabled,
+        load_ohm=args.networkanalyzer_load_ohm,
+        highz_correction_db=args.networkanalyzer_highz_correction_db,
+        external_gain_db=networkanalyzer_external_gain_db,
+    )
     if not args.headless:
         patch_scope_mean_display()
-    print(f"Starting PyRPL {pyrpl.__version__} config={args.config!r} headless={args.headless}")
-    print(f"Connecting to Red Pitaya at {args.hostname}")
+    print(
+        f"Starting PyRPL {pyrpl.__version__} config={args.config!r} "
+        f"headless={args.headless} loglevel={args.loglevel}",
+        flush=True,
+    )
+    print(f"Connecting to Red Pitaya at {args.hostname}", flush=True)
     p = pyrpl.Pyrpl(
         config=args.config,
         hostname=args.hostname,
         gui=not args.headless,
         loglevel=args.loglevel,
     )
+    print("PyRPL connection returned; applying bridge display settings", flush=True)
     p.spectrumanalyzer.external_gain_db = args.spectrum_external_gain_db
+    p.networkanalyzer.dbm_display_enabled = args.networkanalyzer_dbm_display_enabled
+    p.networkanalyzer.dbm_load_ohm = args.networkanalyzer_load_ohm
+    p.networkanalyzer.dbm_highz_correction_db = args.networkanalyzer_highz_correction_db
+    p.networkanalyzer.external_gain_db = networkanalyzer_external_gain_db
     if not args.headless:
         try:
             p.rp.scope.ch1_power_response_v_per_w = args.scope_ch1_response_v_per_w
             p.rp.scope.ch2_power_response_v_per_w = args.scope_ch2_response_v_per_w
+            p.rp.scope.ch1_zero_offset_v = args.scope_ch1_zero_offset_v
+            p.rp.scope.ch2_zero_offset_v = args.scope_ch2_zero_offset_v
+            p.rp.scope.scope_zero_enabled = args.scope_zero_enabled
         except Exception as exc:
-            print(f"WARN could not apply scope power responses: {exc}", flush=True)
+            print(f"WARN could not apply scope display settings: {exc}", flush=True)
     power_correction = spectrum_power_correction_state(p.spectrumanalyzer)
-    print(f"Spectrum dBm units use {args.spectrum_load_ohm:g} ohm equivalent load")
+    print(f"Spectrum dBm units use {args.spectrum_load_ohm:g} ohm equivalent load", flush=True)
     print(
         "Spectrum dBm correction: "
         f"enabled={power_correction['enabled']} "
         f"high-Z={power_correction['highz_correction_db']:.3f} dB "
         f"external_gain={power_correction['external_gain_db']:.3f} dB "
-        f"total_subtracted={power_correction['total_subtracted_db']:.3f} dB"
+        f"total_subtracted={power_correction['total_subtracted_db']:.3f} dB",
+        flush=True,
+    )
+    networkanalyzer_display = networkanalyzer_power_state(p.networkanalyzer)
+    print(
+        "Network analyzer magnitude display: "
+        f"unit={networkanalyzer_display['display_unit']} "
+        f"load={networkanalyzer_display['load_ohm']:.3g} ohm "
+        f"high-Z={networkanalyzer_display['highz_correction_db']:.3f} dB "
+        f"external_gain={networkanalyzer_display['external_gain_db']:.3f} dB "
+        f"total_subtracted={networkanalyzer_display['total_subtracted_db']:.3f} dB",
+        flush=True,
     )
 
     bridge = Bridge(
@@ -1606,6 +2096,10 @@ def main() -> int:
             "loglevel": args.loglevel,
             "scope_ch1_response_v_per_w": args.scope_ch1_response_v_per_w,
             "scope_ch2_response_v_per_w": args.scope_ch2_response_v_per_w,
+            "scope_zero_enabled": args.scope_zero_enabled,
+            "scope_ch1_zero_offset_v": args.scope_ch1_zero_offset_v,
+            "scope_ch2_zero_offset_v": args.scope_ch2_zero_offset_v,
+            "networkanalyzer_dbm_display": networkanalyzer_display,
         },
     )
     server = ThreadingHTTPServer(
@@ -1613,8 +2107,8 @@ def main() -> int:
     )
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    print(f"Bridge listening on http://{args.listen_host}:{args.listen_port}")
-    print("Initial safe write example: /set?param=scope.duration&value=0.1")
+    print(f"Bridge listening on http://{args.listen_host}:{args.listen_port}", flush=True)
+    print("Initial safe write example: /set?param=scope.duration&value=0.1", flush=True)
 
     timer = QtCore.QTimer()
     timer.timeout.connect(bridge.drain_once)

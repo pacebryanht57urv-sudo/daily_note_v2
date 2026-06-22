@@ -22,9 +22,13 @@ from typing import Any
 
 import numpy as np
 
-SCRIPT_DIR = Path(__file__).resolve().parent
-if str(SCRIPT_DIR) not in sys.path:
-    sys.path.insert(0, str(SCRIPT_DIR))
+LOCK_DIR = Path(__file__).resolve().parent
+SRC_DIR = LOCK_DIR.parent
+DRIVERS_DIR = SRC_DIR / "drivers"
+COMMON_DIR = SRC_DIR / "common"
+for module_dir in (LOCK_DIR, DRIVERS_DIR, COMMON_DIR):
+    if str(module_dir) not in sys.path:
+        sys.path.insert(0, str(module_dir))
 
 from lock_common import (
     RESULTS_DIR,
@@ -33,6 +37,7 @@ from lock_common import (
     configure_prelock_sweep,
     read_arc_factor as read_arc_factor_tcp,
     set_param,
+    stop_bridge_acquisitions,
     read_pc as read_pc_tcp,
     write_arc_factor as write_arc_factor_tcp,
     write_pc_voltage as write_pc_voltage_tcp,
@@ -390,6 +395,7 @@ def main() -> int:
             summary["serial_session"] = {"connection": "serial", "port": args.laser_port, "reused": True}
 
         try:
+            stop_bridge_acquisitions(args.base)
             safe_off(args.base)
             pc_start = laser_write_pc_voltage(args, args.pc_start_v)
             summary["steps"].append({"stage": "set_pc_start", "pc": pc_start})

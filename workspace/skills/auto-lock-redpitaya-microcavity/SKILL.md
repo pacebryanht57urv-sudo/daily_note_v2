@@ -49,18 +49,18 @@ Default signal and control meanings:
 Default operational path:
 
 ```text
-workspace/scripts/redpitaya_microcavity_lock/current_mode_fast_lock.py
+workspace/scripts/redpitaya_microcavity_lock/src/lock/current_mode_fast_lock.py
 ```
 
 Key dependencies reused by the locking workflow:
 
-- `workspace/scripts/redpitaya_microcavity_lock/microcavity_control_panel.py`: local dashboard for stable Q/lock operations. It exposes current-mode lock, selected-mode dry-run, move-to-target, Q table selection, and safe-off buttons while delegating hardware work to the existing scripts.
-- `workspace/scripts/redpitaya_microcavity_lock/current_mode_fast_lock.py`: default TOPTICA one-command current-mode lock; PC starts at 75 V, ASG sweep amplitude defaults to 1.0 V, bounded low-width ARC exception, PC centering, fixed negative-I PID handoff, final 2 s live monitor.
-- `workspace/scripts/redpitaya_microcavity_lock/weiyuan_current_mode_lock.py`: micro-source current-mode lock; initialize active LD set current to 260 mA, center the dip by tuning LD set current, then reuse the same fixed negative-I PID handoff.
-- `workspace/scripts/redpitaya_microcavity_lock/lock_best_q_mode.py`: after Q fitting, read `Q/best_lock_candidate.json` or fall back to `Q/q_by_mode.csv`, move TOPTICA to the highest-Q0 fitted mode, set PC to 75 V before wavelength movement, then run `current_mode_fast_lock.py`.
-- `workspace/scripts/redpitaya_microcavity_lock/lock_common.py`: shared bridge/TOPTICA/trace-analysis helpers used by the lock scripts.
-- `workspace/scripts/redpitaya_microcavity_lock/pyrpl_live_bridge.py`: local HTTP bridge for Red Pitaya/PyRPL control. It supports the default `--headless` mode for dashboard-only operation and optional GUI mode for PyRPL-native debugging.
-- `workspace/scripts/redpitaya_microcavity_lock/toptica_laser_adapter.py`: TOPTICA serial/TCP adapter. In serial current-mode locking, reuse one COM session during the run and use the short serial timeout path; do not open/close COM3 for every PC/ARC readback.
+- `workspace/scripts/redpitaya_microcavity_lock/src/dashboard/microcavity_control_panel.py`: local dashboard for stable Q/lock operations. It exposes current-mode lock, selected-mode dry-run, move-to-target, Q table selection, and safe-off buttons while delegating hardware work to the existing scripts.
+- `workspace/scripts/redpitaya_microcavity_lock/src/lock/current_mode_fast_lock.py`: default TOPTICA one-command current-mode lock; PC starts at 75 V, ASG sweep amplitude defaults to 1.0 V, bounded low-width ARC exception, PC centering, fixed negative-I PID handoff, final 2 s live monitor.
+- `workspace/scripts/redpitaya_microcavity_lock/src/lock/weiyuan_current_mode_lock.py`: micro-source current-mode lock; initialize active LD set current to 260 mA, center the dip by tuning LD set current, then reuse the same fixed negative-I PID handoff.
+- `workspace/scripts/redpitaya_microcavity_lock/src/lock/lock_best_q_mode.py`: after Q fitting, read `Q/best_lock_candidate.json` or fall back to `Q/q_by_mode.csv`, move TOPTICA to the highest-Q0 fitted mode, set PC to 75 V before wavelength movement, then run `current_mode_fast_lock.py`.
+- `workspace/scripts/redpitaya_microcavity_lock/src/lock/lock_common.py`: shared bridge/TOPTICA/trace-analysis helpers used by the lock scripts.
+- `workspace/scripts/redpitaya_microcavity_lock/src/bridge/pyrpl_live_bridge.py`: local HTTP bridge for Red Pitaya/PyRPL control. It supports the default `--headless` mode for dashboard-only operation and optional GUI mode for PyRPL-native debugging.
+- `workspace/scripts/redpitaya_microcavity_lock/src/drivers/toptica_laser_adapter.py`: TOPTICA serial/TCP adapter. In serial current-mode locking, reuse one COM session during the run and use the short serial timeout path; do not open/close COM3 for every PC/ARC readback.
 
 ## Before Running
 
@@ -82,7 +82,11 @@ When using `launch_pyrpl_bridge_try.bat`, the batch file starts the local dashbo
 http://127.0.0.1:7880/
 ```
 
-The batch file reads `workspace/scripts/redpitaya_microcavity_lock/config.local.json` for machine-specific defaults. On first run, it copies `config.local.example.json` to `config.local.json` and opens it in Notepad; the user should edit RP hostname, laser type, COM ports, and whether to open the PyRPL GUI there. Do not hard-code a user's local RP hostname or COM port into the batch file.
+Before first use on a new computer, run `workspace/scripts/redpitaya_microcavity_lock/install_microcavity_control.bat`. The installer checks for a valid Python + PyRPL `0.9.8.0` runtime and otherwise creates a managed user-level environment under `%LOCALAPPDATA%\MicrocavityControl\envs\...`. It writes the selected runtime to the ignored local file `runtime.local.json`. Use `install_microcavity_control.bat -Reset -ForceManaged` to rebuild the managed runtime from scratch.
+
+The launcher reads `runtime.local.json` and starts dashboard/bridge scripts with that runtime. Do not recreate a package-local `.venv` as the default deployment path. The dashboard and bridge status should show the live Python/PyRPL path so environment mix-ups can be diagnosed quickly.
+
+The batch file reads `workspace/scripts/redpitaya_microcavity_lock/config.local.json` for machine-specific defaults. On first run, it copies `config/config.local.example.json` to `config.local.json` and opens it in Notepad; the user should edit RP hostname, laser type, COM ports, and whether to open the PyRPL GUI there. Do not hard-code a user's local RP hostname or COM port into the batch file.
 
 The dashboard is the preferred entry point for the PyRPL bridge:
 
@@ -106,7 +110,7 @@ Use it only for stable automated microcavity operations:
 - `Selected mode`: choose a cavity directory, then pick highest `Q0`, nearest 1550 nm, or a row/manual wavelength.
 - `Dry-run target`: verify the selected candidate and planned wavelength without touching hardware.
 - `Move to target wavelength`: safe-off RP outputs, set PC to 75 V, move TOPTICA to the selected wavelength, and stop before PID lock.
-- `Restore sweep / PID off`: after a lock attempt or manual interruption, disable PID and restore the 50 Hz, 1 V pre-lock ramp sweep on `out2` with scope input/trigger set for the current-mode sweep view.
+- `Restore sweep / PID off`: after a lock attempt or manual interruption, disable PID, restore the 50 Hz, 1 V pre-lock ramp sweep on `out2`, set scope input/trigger for the current-mode sweep view, and request PyRPL scope continuous run.
 - `Safe off PID/ASG`: turn off the risky RP outputs through the live bridge.
 
 Keep exploratory experiments such as PD comparison, ultrasound sensitivity scans, or report plotting out of this dashboard until those workflows become stable enough to automate.
@@ -118,13 +122,13 @@ Use this as the default rhythm for each simple user lock request:
 Run the one-command script, then inspect the final 2 s monitor summary:
 
 ```powershell
-C:\Users\win10\toptica_lasersdk_venv\Scripts\python.exe workspace\scripts\redpitaya_microcavity_lock\current_mode_fast_lock.py
+C:\Users\win10\toptica_lasersdk_venv\Scripts\python.exe workspace\scripts\redpitaya_microcavity_lock\src\lock\current_mode_fast_lock.py
 ```
 
 Internally it follows this rhythm:
 
 1. Set TOPTICA PC piezo to `75 V` as the fixed starting point for every user-requested lock.
-2. Configure ASG sweep with `amplitude = 1.0 V` and acquire a fresh scope trace of the current mode.
+2. Configure ASG sweep with `amplitude = 1.0 V`, force PyRPL scope `run_continuous = true`, and acquire a fresh scope trace of the current mode.
 3. Analyze only the down-sweep segment by default.
 4. Check apparent full width with only the lower limit:
    - accept if `full_width >= 0.08 V`;
@@ -149,7 +153,7 @@ The script defaults to printing a JSON summary only. It deletes temporary scope 
 After a cavity's large-scan Q fitting is complete, use this when the user asks to lock the highest-Q mode from that cavity:
 
 ```powershell
-C:\Users\win10\toptica_lasersdk_venv\Scripts\python.exe workspace\scripts\redpitaya_microcavity_lock\lock_best_q_mode.py --cavity-dir <.../dieX-Y/cZ>
+C:\Users\win10\toptica_lasersdk_venv\Scripts\python.exe workspace\scripts\redpitaya_microcavity_lock\src\lock\lock_best_q_mode.py --cavity-dir <.../dieX-Y/cZ>
 ```
 
 The Q fitting step writes `Q/best_lock_candidate.json` with the highest fitted `Q0` mode as `candidate`. The same manifest also records `nearest_1550_best_q_candidate`, chosen as the valid fitted mode closest to 1550.0 nm, with highest `Q0` as the tie-breaker. The best-Q lock script uses `candidate` first, and only falls back to sorting `Q/q_by_mode.csv` when the manifest is missing. Its order is:

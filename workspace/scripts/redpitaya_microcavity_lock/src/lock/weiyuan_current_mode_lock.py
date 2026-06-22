@@ -17,11 +17,22 @@ from typing import Any
 
 import numpy as np
 
-SCRIPT_DIR = Path(__file__).resolve().parent
-if str(SCRIPT_DIR) not in sys.path:
-    sys.path.insert(0, str(SCRIPT_DIR))
+LOCK_DIR = Path(__file__).resolve().parent
+SRC_DIR = LOCK_DIR.parent
+DRIVERS_DIR = SRC_DIR / "drivers"
+COMMON_DIR = SRC_DIR / "common"
+for module_dir in (LOCK_DIR, DRIVERS_DIR, COMMON_DIR):
+    if str(module_dir) not in sys.path:
+        sys.path.insert(0, str(module_dir))
 
-from lock_common import RESULTS_DIR, analyze_apparent_width, bridge_get, configure_prelock_sweep, set_param
+from lock_common import (
+    RESULTS_DIR,
+    analyze_apparent_width,
+    bridge_get,
+    configure_prelock_sweep,
+    set_param,
+    stop_bridge_acquisitions,
+)
 from weiyuan_laser_adapter import WeiyuanLaser
 
 
@@ -327,6 +338,7 @@ def main() -> int:
     summary: dict[str, Any] = {"ok": False, "run_tag": run_tag, "steps": []}
 
     try:
+        stop_bridge_acquisitions(args.base)
         safe_off(args.base)
         with WeiyuanLaser(port=args.laser_port, slave=args.slave) as laser:
             summary["initial_laser_status"] = laser.read_status()

@@ -3,11 +3,21 @@
 from __future__ import annotations
 
 import json
+import sys
 import time
+from pathlib import Path
 from urllib.parse import urlencode
 from urllib.request import urlopen
 
 import numpy as np
+
+LOCK_DIR = Path(__file__).resolve().parent
+SRC_DIR = LOCK_DIR.parent
+COMMON_DIR = SRC_DIR / "common"
+DRIVERS_DIR = SRC_DIR / "drivers"
+for module_dir in (COMMON_DIR, DRIVERS_DIR):
+    if str(module_dir) not in sys.path:
+        sys.path.insert(0, str(module_dir))
 
 from data_paths import RESULTS_DIR
 
@@ -25,6 +35,15 @@ def set_param(base: str, param: str, value: object) -> object:
     if not result.get("ok"):
         raise RuntimeError(result)
     return result.get("after")
+
+
+def stop_bridge_acquisitions(base: str) -> None:
+    try:
+        result = bridge_get(base, "/acquisition/stop")
+        if not result.get("ok"):
+            print(f"WARN bridge acquisition stop returned: {result}", flush=True)
+    except Exception as exc:
+        print(f"WARN could not stop spectrum/network acquisitions before scope setup: {exc}", flush=True)
 
 
 def read_arc_factor(host: str) -> dict[str, object]:
@@ -103,6 +122,10 @@ def configure_prelock_sweep(base: str, duration: float, frequency: float, amplit
         ("scope.rolling_mode", "false"),
     ):
         set_param(base, param, value)
+    try:
+        set_param(base, "scope.run_continuous", "true")
+    except Exception as exc:
+        print(f"WARN could not force scope run_continuous before lock capture: {exc}", flush=True)
 
 
 def crossing_x(y0: float, y1: float, x0: float, x1: float, y_cross: float) -> float | None:

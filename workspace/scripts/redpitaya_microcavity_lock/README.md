@@ -25,41 +25,84 @@
 
 ```text
 redpitaya_microcavity_lock/
+  install_microcavity_control.bat
   launch_pyrpl_bridge_try.bat
-  config.local.example.json
-  microcavity_control_panel.py
-  pyrpl_live_bridge.py
-  current_mode_fast_lock.py
-  lock_best_q_mode.py
-  lock_common.py
-  toptica_laser_adapter.py
-  weiyuan_laser_adapter.py
-  data_paths.py
+  stop_microcavity_control.bat
+  config/
+    config.local.example.json
+    pyrpl_configs/try_bridge_safe.yml
+  requirements/
+    requirements-pyrpl.txt
+    requirements-toptica.txt
+  tools/
+    install_microcavity_control.ps1
+    launch_pyrpl_bridge_try.ps1
+  src/
+    dashboard/microcavity_control_panel.py
+    bridge/pyrpl_live_bridge.py
+    lock/current_mode_fast_lock.py
+    lock/lock_best_q_mode.py
+    lock/weiyuan_current_mode_lock.py
+    lock/lock_common.py
+    drivers/toptica_laser_adapter.py
+    drivers/weiyuan_laser_adapter.py
+    common/data_paths.py
 ```
 
 ## Python 环境
 
-推荐使用两个 venv，避免 PyRPL/Qt 和 TOPTICA 控制依赖互相污染。
+PyRPL / dashboard 环境不再默认安装到本文件夹内部。先运行安装器：
+
+```powershell
+.\install_microcavity_control.bat
+```
+
+安装器会按顺序做几件事：
+
+- 检查当前电脑上是否已经有可用的 Python + PyRPL `0.9.8.0` + Qt/仪器依赖；
+- 如果已有环境满足要求，就把它写入本文件夹下的 `runtime.local.json`；
+- 如果没有合格环境，就在用户级目录创建托管环境：
+
+  ```text
+  %LOCALAPPDATA%\MicrocavityControl\envs\pyrpl-0.9.8.0-py310\
+  ```
+
+- 依赖安装完成后，同时写入：
+
+  ```text
+  redpitaya_microcavity_lock\runtime.local.json
+  %LOCALAPPDATA%\MicrocavityControl\runtime.local.json
+  ```
+
+`runtime.local.json`、`.venv/` 和 `python*_embed/` 都是本机运行状态，不进入 Git，也不需要发给别人。别人拿到包后运行安装器，会在他自己的电脑上生成对应 runtime。
+
+如果你希望强制使用用户级托管环境，而不是复用系统里已有 PyRPL：
+
+```powershell
+.\install_microcavity_control.bat -ForceManaged
+```
+
+如果要从头重建这个托管环境：
+
+```powershell
+.\install_microcavity_control.bat -Reset -ForceManaged
+```
+
+推荐 PyRPL / Qt 和 TOPTICA 控制依赖分开，避免互相污染。
 
 ### 1. PyRPL / dashboard 环境
 
-```powershell
-py -3.10 -m venv %USERPROFILE%\pyrpl_bridge_venv
-%USERPROFILE%\pyrpl_bridge_venv\Scripts\python.exe -m pip install --upgrade pip
-%USERPROFILE%\pyrpl_bridge_venv\Scripts\python.exe -m pip install -r requirements-pyrpl.txt
-```
-
 这个环境用于启动：
 
-- `microcavity_control_panel.py`
-- `pyrpl_live_bridge.py`
+- `src/dashboard/microcavity_control_panel.py`
+- `src/bridge/pyrpl_live_bridge.py`
 
 ### 2. TOPTICA / laser-control 环境
 
 ```powershell
 py -3.10 -m venv %USERPROFILE%\toptica_lasersdk_venv
 %USERPROFILE%\toptica_lasersdk_venv\Scripts\python.exe -m pip install --upgrade pip
-%USERPROFILE%\toptica_lasersdk_venv\Scripts\python.exe -m pip install -r requirements-toptica.txt
+%USERPROFILE%\toptica_lasersdk_venv\Scripts\python.exe -m pip install -r requirements\requirements-toptica.txt
 ```
 
 如果 `toptica-lasersdk` 不能从 pip 获取，就按实验室或 TOPTICA 官方 SDK 安装方式装到这个 venv 里。串口控制至少需要 `pyserial`。
@@ -72,7 +115,7 @@ py -3.10 -m venv %USERPROFILE%\toptica_lasersdk_venv
 config.local.json
 ```
 
-第一次双击 `launch_pyrpl_bridge_try.bat` 时，如果这个文件不存在，脚本会自动从 `config.local.example.json` 复制一份，并用记事本打开。改完保存、关闭记事本后，dashboard 会继续启动。
+第一次双击 `launch_pyrpl_bridge_try.bat` 时，如果这个文件不存在，脚本会自动从 `config/config.local.example.json` 复制一份，并用记事本打开。改完保存、关闭记事本后，dashboard 会继续启动。
 
 典型配置如下：
 
@@ -97,7 +140,7 @@ config.local.json
 仍然可以用环境变量临时覆盖少数字段，例如：
 
 ```bat
-set PYTHON_EXE=%USERPROFILE%\pyrpl_bridge_venv\Scripts\python.exe
+set PYTHON_EXE=D:\somewhere\python.exe
 set TOPTICA_PYTHON_EXE=%USERPROFILE%\toptica_lasersdk_venv\Scripts\python.exe
 set RP_HOSTNAME=RP-f0cb0d
 set TOPTICA_HOST=192.168.1.104
@@ -128,26 +171,38 @@ set PYRPL_BRIDGE_GUI=0
    .\launch_pyrpl_bridge_try.bat
    ```
 
-2. `.bat` 默认会启动 dashboard，并由 dashboard 自动拉起 headless PyRPL bridge。
+   启动器会先自动停止同一个 `redpitaya_microcavity_lock` 包里残留的 dashboard / bridge 进程，再启动新的 dashboard。若需要临时跳过这一步，可先设置 `MICROCAVITY_SKIP_AUTOSTOP=1`。
+
+2. `.bat` 会读取 `runtime.local.json` 里的 `runtime_python`。如果 runtime 缺失或失效，会自动调用 `tools/install_microcavity_control.ps1` 到用户级目录安装/修复环境。
+
+3. `.bat` 会启动 dashboard，并由 dashboard 自动拉起 headless PyRPL bridge。启动时会打印实际使用的 Python 和 PyRPL 路径；dashboard 的 bridge status 也会显示 live bridge 自报的 Python/PyRPL 路径。
 
    如果是第一次运行，`.bat` 会先生成并打开 `config.local.json`；改完保存、关闭记事本后再继续。
 
-3. 如果需要手动重连，先在 `RP bridge action` 里选择 `Check RP host`；确认 RP host 能解析后，选择 `Start / restart headless bridge`。需要 PyRPL 原生窗口时，选择 `Start / restart GUI bridge`。
+4. 如果页面或 bridge 状态混乱，先双击：
 
-4. Bridge 启动时会读取 `config.local.json` 里的 `photodetector` 和 `rp_frontend`：
+   ```powershell
+   .\stop_microcavity_control.bat
+   ```
+
+   它会停止本工具包相关的 dashboard / bridge 进程，并释放默认端口 `7880` 和 `7870`。然后再重新运行 `launch_pyrpl_bridge_try.bat`。
+
+5. 如果需要手动重连，先在 `RP bridge action` 里选择 `Check RP host`；确认 RP host 能解析后，选择 `Start / restart headless bridge`。需要 PyRPL 原生窗口时，选择 `Start / restart GUI bridge`。
+
+6. Bridge 启动时会读取 `config.local.json` 里的 `photodetector` 和 `rp_frontend`：
    - `photodetector.scope_response_v_per_w` 用来初始化 PyRPL scope 的光功率响应系数；
    - `rp_frontend.rf_path.external_gain_db` 用来初始化 PyRPL 频谱仪的 `external_gain_db`，即 dBm/dBmHz 显示时需要反扣的前端 RF 增益。
    - 如果没有写这些新字段，旧逻辑仍会保留 `RP-f0cb0d -> 23 dB` 的兼容默认值。
 
-5. 先选 `Experiment mode`。`TOPTICA Q / Lock` 会显示大扫、选模和 Q 表；`微源光子 Lock` 只显示微源串口控制和当前模式锁模；`RP spectrum / debug` 只显示 RP 相关安全控制。
+7. 先选 `Experiment mode`。`TOPTICA Q / Lock` 会显示大扫、选模和 Q 表；`微源光子 Lock` 只显示微源串口控制和当前模式锁模；`RP spectrum / debug` 只显示 RP 相关安全控制。
 
-6. 点击 `Refresh status` 检查当前模式需要的仪器状态。
+8. 点击 `Refresh status` 检查当前模式需要的仪器状态。
 
 选择 `微源光子` 时，dashboard 会显示一个小控制区，可以读取控制器状态、设置 TEC 温度、设置 LD 电流，并可一键把 LD 设定电流写为 `260 mA`。
 
 在 `微源光子` 模式下点击 `Lock current mode` 会运行 `weiyuan_current_mode_lock.py`：先把 active LD set current 初始化为 `260 mA`，再用 RP 的 1 V 三角扫频找当前模式 dip，并调 LD set current 让 dip 靠近 `out2 = 0`；居中后关闭扫频，设置 PID setpoint、`ival = +1 V`，并用固定负积分方向锁模。
 
-7. 手动把激光器调到目标模式附近后，点击 `Lock current mode`。
+9. 手动把激光器调到目标模式附近后，点击 `Lock current mode`。
 
 ## 锁模默认动作
 
@@ -155,6 +210,12 @@ set PYRPL_BRIDGE_GUI=0
 
 ```text
 current_mode_fast_lock.py
+```
+
+实际路径为：
+
+```text
+src/lock/current_mode_fast_lock.py
 ```
 
 默认流程：
@@ -200,11 +261,16 @@ RP-f0cb0d
 
 ## 移植建议
 
-如果要给其他人长期使用，建议下一步把本文件夹打成一个独立包，并补上：
+给其他电脑使用时，推荐直接复制整个：
 
-- `requirements-pyrpl.txt`
-- `requirements-toptica.txt`
-- `config.local.example.json`
-- 一个不包含大扫按钮的纯锁模 dashboard 模式
+```text
+redpitaya_microcavity_lock/
+```
 
-当前版本已经能按本 README 手动配置和启动，但还不是严格意义上的 pip package。
+然后运行：
+
+```text
+launch_pyrpl_bridge_try.bat
+```
+
+第一次运行会检查 `runtime.local.json`；如果没有可用 runtime，会调用安装器在用户级目录 `%LOCALAPPDATA%\MicrocavityControl\envs\...` 下创建托管环境。本文件夹内不会默认生成 `.venv`。如果目标电脑没有 Python，仍需先安装 Python 3.10/3.11；当前版本是“文件夹级工具包”，不是严格意义上的 pip package。

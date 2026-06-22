@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>NPZ/MAT Comparison Viewer</title>
+    <link rel="stylesheet" href="/style.css">
+    <script src="/vendor/plotly.min.js"></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <h1>NPZ/MAT Comparison Viewer</h1>
+        <p id="statusText">Connecting...</p>
+      </div>
+      <div class="topbar-actions">
+        <button id="refreshButton" type="button">Refresh</button>
+        <button id="exportPngButton" type="button">PNG</button>
+        <button id="exportSvgButton" type="button">SVG</button>
+      </div>
+    </header>
+
+    <main class="layout">
+      <aside class="panel browser-panel">
+        <div class="panel-head">
+          <h2>Data Root</h2>
+          <button id="upButton" type="button">Up</button>
+        </div>
+        <div id="currentPath" class="current-path">/</div>
+        <div id="fileList" class="file-list"></div>
+      </aside>
+
+      <section class="plot-area">
+        <div id="plot"></div>
+      </section>
+
+      <aside class="panel controls-panel">
+        <section>
+          <h2>Selected File</h2>
+          <div id="selectedFile" class="muted">Choose a .npz or .mat file.</div>
+        </section>
+
+        <section class="control-grid">
+          <label>
+            X
+            <select id="xVar"></select>
+          </label>
+          <label>
+            X component
+            <select id="xComponent">
+              <option value="real">real</option>
+              <option value="imag">imag</option>
+              <option value="abs">abs</option>
+              <option value="phase">phase</option>
+            </select>
+          </label>
+          <label>
+            X 2D mode
+            <select id="xMode">
+              <option value="row">row</option>
+              <option value="col">column</option>
+              <option value="mean_rows">mean rows</option>
+              <option value="mean_cols">mean columns</option>
+            </select>
+          </label>
+          <label>
+            X index
+            <input id="xIndex" type="number" value="0" min="0">
+          </label>
+
+          <label>
+            Y
+            <select id="yVar"></select>
+          </label>
+          <label>
+            Y component
+            <select id="yComponent">
+              <option value="real">real</option>
+              <option value="imag">imag</option>
+              <option value="abs">abs</option>
+              <option value="phase">phase</option>
+            </select>
+          </label>
+          <label>
+            Y 2D mode
+            <select id="yMode">
+              <option value="row">row</option>
+              <option value="col">column</option>
+              <option value="mean_rows">mean rows</option>
+              <option value="mean_cols">mean columns</option>
+            </select>
+          </label>
+          <label>
+            Y index
+            <input id="yIndex" type="number" value="0" min="0">
+          </label>
+        </section>
+
+        <section class="control-grid">
+          <label>
+            Trace name
+            <input id="traceName" type="text" placeholder="Use file and variable">
+          </label>
+          <label>
+            Normalize
+            <select id="normalizeMode">
+              <option value="none">none</option>
+              <option value="max">y / max(abs(y))</option>
+              <option value="minmax">(y - min) / span</option>
+              <option value="zscore">z-score</option>
+            </select>
+          </label>
+          <label>
+            Y offset
+            <input id="yOffset" type="number" value="0" step="0.1">
+          </label>
+          <label>
+            X shift
+            <input id="xShift" type="number" value="0" step="0.1">
+          </label>
+        </section>
+
+        <section class="control-grid">
+          <label>
+            X scale
+            <select id="xAxisScale">
+              <option value="linear">linear</option>
+              <option value="log">log</option>
+            </select>
+          </label>
+          <label>
+            Y scale
+            <select id="yAxisScale">
+              <option value="linear">linear</option>
+              <option value="log">log</option>
+            </select>
+          </label>
+        </section>
+
+        <div class="button-row">
+          <button id="addTraceButton" type="button">Add Trace</button>
+          <button id="cancelEditButton" type="button" hidden>Cancel Edit</button>
+          <button id="clearButton" type="button">Clear</button>
+        </div>
+
+        <section>
+          <h2>Traces</h2>
+          <div id="traceList" class="trace-list"></div>
+        </section>
+      </aside>
+    </main>
+
+    <div id="toast" class="toast" hidden></div>
+    <script src="/app.js"></script>
+  </body>
+</html>

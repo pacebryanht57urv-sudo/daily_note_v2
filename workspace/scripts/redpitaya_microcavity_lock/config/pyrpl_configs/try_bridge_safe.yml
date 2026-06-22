@@ -21,13 +21,13 @@ redpitaya:
   password: root
   port: 2222
   reloadfpga: auto
-  reloadserver: false
+  reloadserver: true
   serverbinfilename: fpga.bit.bin
   serverdirname: //opt//pyrpl//
   serverdtbofilename: fpga.dtbo
   silence_env: false
   sshport: 22
-  timeout: 1
+  timeout: 5
   user: root
 scope:
   curve_name: scope curve
@@ -66,8 +66,8 @@ spectrumanalyzer:
   input1_baseband: in2
   input2_baseband: out2
   acbandwidth: 0
-  window: gaussian
-  display_unit: dBm/Hz
+  window: blackman
+  display_unit: dB(Vpk^2)
   center: 100000.0
 asg0:
   frequency: 49.942173063755035
@@ -84,10 +84,13 @@ asg1:
   offset: 0.0
   amplitude: 0.5
 pid0:
-  i: 0
+  i: 0.0
   input: in1
   output_direct: 'off'
-  p: 0
-  setpoint: 0
+  p: 0.0
+  setpoint: 0.0
   min_voltage: -1.0
   differential_mode_enabled: false
+lockbox:
+  sequence:
+  - outputs: {}
