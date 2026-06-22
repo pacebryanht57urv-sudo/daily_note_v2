@@ -35,6 +35,9 @@ __pycache__/
 !/workspace/skills/
 !/workspace/skills/**
 /workspace/scripts/redpitaya_microcavity_lock/config.local.json
+/workspace/scripts/redpitaya_microcavity_lock/runtime.local.json
+/workspace/scripts/redpitaya_microcavity_lock/.venv/
+/workspace/scripts/redpitaya_microcavity_lock/python*_embed/
 /workspace/scripts/**/__pycache__/
 /workspace/scripts/**/*.pyc
 /workspace/scripts/**/*.pyo

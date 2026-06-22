@@ -8,10 +8,11 @@ import csv
 import html
 import json
 import math
+import os
 import re
 from pathlib import Path
 from typing import Iterable
-from urllib.parse import quote
+from urllib.parse import quote, unquote, urlparse
 
 from chip7_design import C_M_PER_S, chip7_design_for_die
 from data_paths import CAMPAIGN_ENV, CHIP_ENV, DATA_ROOT_ENV, default_campaign, default_chip, default_results_dir
@@ -19,7 +20,7 @@ from data_paths import CAMPAIGN_ENV, CHIP_ENV, DATA_ROOT_ENV, default_campaign, 
 
 CARD_CSS = """  body { margin: 26px; font-family: Arial, "Microsoft YaHei", sans-serif; color: #111; background: #fff; }
   h1 { margin: 0 0 16px; padding-bottom: 14px; border-bottom: 1px solid #ddd; font-size: 28px; }
-  .card { display: grid; grid-template-columns: 30% 43% 24%; gap: 28px; align-items: stretch; max-width: 1428px; min-height: 632px; }
+  .card { display: grid; grid-template-columns: minmax(380px, 0.9fr) minmax(560px, 1.25fr) minmax(500px, 1fr); gap: 24px; align-items: stretch; max-width: 1760px; min-height: 632px; }
   .panel { border: 1px solid #d8d8d8; border-radius: 4px; padding: 22px; min-height: 632px; box-sizing: border-box; background: #fff; }
   .cavity-title { font-size: 20px; font-weight: 700; margin: 0 0 14px; }
   .film { width: 100%; height: 214px; object-fit: cover; display: block; margin-bottom: 16px; background: #fafafa; border: 1px solid #e3e3e3; box-sizing: border-box; }
@@ -30,9 +31,9 @@ CARD_CSS = """  body { margin: 26px; font-family: Arial, "Microsoft YaHei", sans
   .kv td:first-child { font-weight: 700; width: 36%; }
   .note { font-size: 14px; line-height: 1.5; margin-top: 12px; }
   .plot-title { font-size: 16px; font-weight: 700; margin: 0 0 16px; }
-  .plot { width: 100%; max-height: 548px; object-fit: contain; display: block; margin: 0 auto; }
+  .plot { width: 100%; height: 548px; object-fit: contain; display: block; margin: 0 auto; }
   .placeholder { height: 530px; border: 1px solid #d8d8d8; color: #777; display: flex; align-items: center; justify-content: center; text-align: center; line-height: 1.5; background: #fafafa; }
-  .review-links { max-width: 1428px; margin-top: 14px; padding: 12px 14px; border: 1px solid #d8d8d8; border-radius: 4px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; box-sizing: border-box; }
+  .review-links { max-width: 1760px; margin-top: 14px; padding: 12px 14px; border: 1px solid #d8d8d8; border-radius: 4px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; box-sizing: border-box; }
   .review-links .label { font-weight: 700; margin-right: 4px; }
   .review-links a, .review-links span { display: inline-flex; align-items: center; min-height: 30px; padding: 0 12px; border: 1px solid #111; border-radius: 4px; font-size: 14px; text-decoration: none; color: #111; background: #fff; }
   .review-links span { border-color: #cfcfcf; color: #777; background: #fafafa; }
@@ -125,19 +126,45 @@ def read_json(path: Path) -> dict[str, object]:
     return json.loads(path.read_text(encoding="utf-8-sig"))
 
 
-def file_uri(path: Path) -> str:
-    absolute = path.resolve()
-    return "file:///" + quote(str(absolute).replace("\\", "/"), safe="/:")
+def relative_asset_link(path: Path, base_dir: Path) -> str:
+    relative = os.path.relpath(path.resolve(), base_dir.resolve())
+    return quote(relative.replace("\\", "/"), safe="/:")
 
 
-def find_photo(results_root: Path, chip: str, die: str, cavity: str, existing_html: str | None, override: Path | None) -> str:
+def existing_photo_link(existing_html: str | None, base_dir: Path) -> str | None:
+    if not existing_html:
+        return None
+    match = re.search(r'<img class="film" src="([^"]+)"', existing_html)
+    if not match:
+        return None
+    src = html.unescape(match.group(1))
+    parsed = urlparse(src)
+    if parsed.scheme == "file":
+        local_path = unquote(parsed.path)
+        if re.match(r"^/[A-Za-z]:/", local_path):
+            local_path = local_path[1:]
+        return relative_asset_link(Path(local_path), base_dir)
+    if re.match(r"^[A-Za-z]:[\\/]", src):
+        return relative_asset_link(Path(src), base_dir)
+    return src
+
+
+def find_photo(
+    results_root: Path,
+    chip: str,
+    die: str,
+    cavity: str,
+    existing_html: str | None,
+    override: Path | None,
+    *,
+    base_dir: Path,
+) -> str:
     if override is not None:
-        return file_uri(override)
+        return relative_asset_link(override, base_dir)
 
-    if existing_html:
-        match = re.search(r'<img class="film" src="([^"]+)"', existing_html)
-        if match:
-            return match.group(1)
+    existing = existing_photo_link(existing_html, base_dir)
+    if existing:
+        return existing
 
     figure_dirs = [
         results_root / "figures" / "measurement" / chip / die,
@@ -160,7 +187,7 @@ def find_photo(results_root: Path, chip: str, die: str, cavity: str, existing_ht
             key=lambda path: (len(path.name), path.name),
         )
         if candidates:
-            return file_uri(candidates[0])
+            return relative_asset_link(candidates[0], base_dir)
     return ""
 
 
@@ -312,16 +339,85 @@ def auto_note(q_dir: Path) -> str:
 
 def sensitivity_panel(cavity_dir: Path) -> str:
     sensitivity_dir = cavity_dir / "sensitivity"
+    latest = latest_sensitivity(cavity_dir)
+    latest_png = sensitivity_path_from_latest(cavity_dir, latest, "figure_png")
+    if latest_png and latest_png.exists():
+        return f'<img class="plot" src="{html.escape(rel_href(latest_png, cavity_dir))}" alt="sensitivity">'
     candidates: list[Path] = []
     if sensitivity_dir.exists():
         candidates = sorted(
-            [path for path in sensitivity_dir.iterdir() if path.is_file() and path.suffix.lower() in {".png", ".jpg", ".jpeg"}],
+            [path for path in sensitivity_dir.rglob("*") if path.is_file() and path.suffix.lower() in {".png", ".jpg", ".jpeg"}],
             key=lambda path: path.stat().st_mtime,
             reverse=True,
         )
     if candidates:
-        return f'<img class="plot" src="{html.escape(str(candidates[0].relative_to(cavity_dir)).replace(chr(92), "/"))}" alt="sensitivity">'
+        return f'<img class="plot" src="{html.escape(rel_href(candidates[0], cavity_dir))}" alt="sensitivity">'
     return '<div class="placeholder">pending<br>sensitivity figure</div>'
+
+
+def rel_href(path: Path, base: Path) -> str:
+    try:
+        return str(path.resolve().relative_to(base.resolve())).replace("\\", "/")
+    except Exception:
+        return str(path).replace("\\", "/")
+
+
+def latest_sensitivity(cavity_dir: Path) -> dict:
+    latest_path = cavity_dir / "sensitivity" / "latest.json"
+    if not latest_path.exists():
+        return {}
+    try:
+        return json.loads(latest_path.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return {}
+
+
+def sensitivity_path_from_latest(cavity_dir: Path, latest: dict, key: str) -> Path | None:
+    value = latest.get(key)
+    if not value:
+        return None
+    path = Path(str(value))
+    if path.is_absolute():
+        return path
+    return cavity_dir / path
+
+
+def sensitivity_run_dir_from_latest(cavity_dir: Path, latest: dict) -> Path | None:
+    value = latest.get("run_dir")
+    if not value:
+        return None
+    path = Path(str(value))
+    if path.is_absolute():
+        return path
+    return cavity_dir / "sensitivity" / path
+
+
+def sensitivity_review_link(
+    cavity_dir: Path,
+    latest: dict,
+    *,
+    latest_key: str,
+    fallback_filename: str,
+    label: str,
+) -> str:
+    latest_path = sensitivity_path_from_latest(cavity_dir, latest, latest_key)
+    if latest_path and latest_path.exists():
+        return f'<a href="{html.escape(rel_href(latest_path, cavity_dir))}">{html.escape(label)}</a>'
+
+    plots = latest.get("plots") if isinstance(latest.get("plots"), dict) else {}
+    plot_value = plots.get(latest_key)
+    if plot_value:
+        plot_path = Path(str(plot_value))
+        if not plot_path.is_absolute():
+            plot_path = cavity_dir / plot_path
+        if plot_path.exists():
+            return f'<a href="{html.escape(rel_href(plot_path, cavity_dir))}">{html.escape(label)}</a>'
+
+    run_dir = sensitivity_run_dir_from_latest(cavity_dir, latest)
+    fallback_path = run_dir / "figures" / fallback_filename if run_dir else None
+    if fallback_path and fallback_path.exists():
+        return f'<a href="{html.escape(rel_href(fallback_path, cavity_dir))}">{html.escape(label)}</a>'
+    return f"<span>{html.escape(label)} pending</span>"
 
 
 def q_trend_panel(q_dir: Path, force_pending: bool = False) -> str:
@@ -343,17 +439,38 @@ def review_links(cavity_dir: Path) -> str:
         if q_review.exists()
         else "<span>Q / dispersion review pending</span>"
     )
-    sensitivity_review = cavity_dir / "sensitivity" / "interactive_sensitivity.html"
-    sensitivity_html = (
-        '<a href="sensitivity/interactive_sensitivity.html">Sensitivity review</a>'
-        if sensitivity_review.exists()
-        else "<span>Sensitivity review pending</span>"
+    latest = latest_sensitivity(cavity_dir)
+    latest_review = sensitivity_path_from_latest(cavity_dir, latest, "interactive_html")
+    if latest_review and latest_review.exists():
+        sensitivity_html = f'<a href="{html.escape(rel_href(latest_review, cavity_dir))}">Sensitivity review</a>'
+    else:
+        sensitivity_review = cavity_dir / "sensitivity" / "interactive_sensitivity.html"
+        sensitivity_html = (
+            '<a href="sensitivity/interactive_sensitivity.html">Sensitivity review</a>'
+            if sensitivity_review.exists()
+            else "<span>Sensitivity review pending</span>"
+        )
+    noise_html = sensitivity_review_link(
+        cavity_dir,
+        latest,
+        latest_key="noise_psd_html",
+        fallback_filename="noise_psd.html",
+        label="Noise PSD review",
+    )
+    network_html = sensitivity_review_link(
+        cavity_dir,
+        latest,
+        latest_key="network_response_html",
+        fallback_filename="network_response.html",
+        label="Network response review",
     )
     return (
         '<section class="review-links">\n'
         '  <div class="label">Interactive reviews</div>\n'
         f"  {q_html}\n"
         f"  {sensitivity_html}\n"
+        f"  {noise_html}\n"
+        f"  {network_html}\n"
         "</section>"
     )
 
@@ -386,7 +503,7 @@ def write_card(args: argparse.Namespace) -> Path:
     throughput = text_or_pending(args.throughput or power_throughput or existing_cell(existing, "throughput"))
     sensitivity = text_or_pending(args.sensitivity or existing_cell(existing, "sensitivity"))
     radius_um, gap_um = design_values(args.chip, args.die, args.cavity, args.radius_um, args.gap_um)
-    photo = find_photo(results_root, args.chip, args.die, args.cavity, existing, args.photo)
+    photo = find_photo(results_root, args.chip, args.die, args.cavity, existing, args.photo, base_dir=cavity_dir)
 
     if args.skip_reason:
         mode_rows = '<tr><td colspan="5">not measured</td></tr>'

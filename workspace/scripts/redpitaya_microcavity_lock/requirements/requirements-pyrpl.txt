@@ -1,0 +1,10 @@
+numpy
+scipy
+matplotlib
+pyqtgraph
+qtpy
+PyQt5
+pyrpl @ https://github.com/pyrpl-fpga/pyrpl/archive/81beee5cf5e3651e66b5dec5103a355fca07fa30.zip
+pyserial
+pyvisa
+pyvisa-py

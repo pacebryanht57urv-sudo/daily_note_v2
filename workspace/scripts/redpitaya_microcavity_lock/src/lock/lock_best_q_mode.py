@@ -12,15 +12,21 @@ import time
 from pathlib import Path
 from typing import Any
 
-SCRIPT_DIR = Path(__file__).resolve().parent
-if str(SCRIPT_DIR) not in sys.path:
-    sys.path.insert(0, str(SCRIPT_DIR))
+LOCK_DIR = Path(__file__).resolve().parent
+SRC_DIR = LOCK_DIR.parent
+PACKAGE_DIR = SRC_DIR.parent
+REPO_ROOT = PACKAGE_DIR.parents[2]
+DRIVERS_DIR = SRC_DIR / "drivers"
+COMMON_DIR = SRC_DIR / "common"
+for module_dir in (LOCK_DIR, DRIVERS_DIR, COMMON_DIR):
+    if str(module_dir) not in sys.path:
+        sys.path.insert(0, str(module_dir))
 
 from lock_common import set_param
 from toptica_laser_adapter import move_to_wavelength, write_pc_voltage
 
 
-DEFAULT_LOCK_SCRIPT = SCRIPT_DIR / "current_mode_fast_lock.py"
+DEFAULT_LOCK_SCRIPT = LOCK_DIR / "current_mode_fast_lock.py"
 
 
 def finite_float(value: object) -> float | None:
@@ -193,7 +199,7 @@ def run_lock_script(args: argparse.Namespace, lock_extra_args: list[str]) -> tup
     ]
     proc = subprocess.run(
         command,
-        cwd=SCRIPT_DIR.parents[2],
+        cwd=REPO_ROOT,
         text=True,
         capture_output=True,
         check=False,

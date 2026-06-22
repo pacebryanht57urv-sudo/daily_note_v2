@@ -20,6 +20,12 @@
   "rp_frontend": {
     "dc_path": {
       "attenuator_db": 20.0,
+      "scope_zero": {
+        "enabled": false,
+        "ch1_offset_v": 0.0,
+        "ch2_offset_v": 0.0,
+        "note": "Optional display-only scope zero offsets. They are subtracted from the PyRPL scope GUI traces and power readout, but raw captures and PID logic stay unchanged."
+      },
       "note": "Nominal DC attenuation before RP input; explicit photodetector.scope_response_v_per_w overrides this estimate."
     },
     "rf_path": {
@@ -30,5 +36,13 @@
       "external_gain_db": 23.0,
       "note": "Measured total RF gain seen by RP/FPS4 for bias tee + amplifier; used as spectrum external_gain_db."
     }
+  },
+  "sensitivity": {
+    "pressure_calibration_root": "%DAILY_NOTE_DATA_ROOT%\\experiments\\calibrations\\ultrasound_sources",
+    "pressure_source_model": "OLYMPUS_V103_RB",
+    "pressure_calibration_path": "",
+    "pressure_calibration_drive_vpp": 10.0,
+    "pressure_quantity": "pk",
+    "note": "When pressure_calibration_path is empty, the dashboard reads pressure_calibration_root/<pressure_source_model>/calibration.meta.json and uses its default_processed_file. pressure_quantity is pk for peak pressure or rms for RMS pressure."
   }
 }
