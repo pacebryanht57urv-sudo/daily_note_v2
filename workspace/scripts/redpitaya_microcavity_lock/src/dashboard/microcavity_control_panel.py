@@ -318,7 +318,7 @@ def load_local_module(module_name: str) -> Any:
 def load_config_file(path: Path | None) -> dict[str, Any]:
     if path is None or not path.exists():
         return {}
-    with path.open("r", encoding="utf-8") as fh:
+    with path.open("r", encoding="utf-8-sig") as fh:
         data = json.load(fh)
     if not isinstance(data, dict):
         raise ValueError(f"Dashboard config must be a JSON object: {path}")
@@ -394,11 +394,11 @@ def list_pressure_sources(root: Path) -> list[dict[str, Any]]:
 
 
 def default_pressure_calibration_from_source(root: Path, source_model: str | None) -> Path:
-    source_id = source_model or DEFAULT_PRESSURE_SOURCE
+    source_id = str(source_model or DEFAULT_PRESSURE_SOURCE).strip() or DEFAULT_PRESSURE_SOURCE
     meta = read_pressure_source_meta(root / source_id)
     if meta and meta.get("path"):
         return Path(str(meta["path"]))
-    return DEFAULT_PRESSURE_CALIBRATION
+    return root / source_id / "processed" / DEFAULT_PRESSURE_CALIBRATION_FILE
 
 
 def voltage_ratio_from_db(db_value: float | None) -> float:
@@ -1207,9 +1207,14 @@ def load_pressure_calibration(path: Path) -> dict[str, Any]:
 def pressure_calibration_from_body(body: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
     defaults = getattr(args, "sensitivity_defaults", {}) or {}
     path_text = str(body.get("pressure_calibration_path") or "").strip()
-    if not path_text and body.get("pressure_source_model"):
+    source_model = str(
+        body.get("pressure_source_model")
+        or defaults.get("pressure_source_model")
+        or DEFAULT_PRESSURE_SOURCE
+    ).strip()
+    if not path_text:
         root = Path(str(defaults.get("pressure_calibration_root") or DEFAULT_PRESSURE_CALIBRATION_ROOT))
-        path_text = str(default_pressure_calibration_from_source(root, str(body.get("pressure_source_model"))))
+        path_text = str(default_pressure_calibration_from_source(root, source_model))
     if not path_text:
         path_text = str(defaults.get("pressure_calibration_path") or DEFAULT_PRESSURE_CALIBRATION)
     calibration = load_pressure_calibration(Path(path_text).expanduser())
@@ -1272,10 +1277,15 @@ def sensitivity_settings(body: dict[str, Any], args: argparse.Namespace) -> dict
             "source_model": str(sensitivity_defaults.get("pressure_source_model") or DEFAULT_PRESSURE_SOURCE),
         }
     except Exception as exc:
+        fallback_pressure_path = default_pressure_calibration_from_source(
+            pressure_root,
+            str(sensitivity_defaults.get("pressure_source_model") or DEFAULT_PRESSURE_SOURCE),
+        )
         settings["pressure_calibration"] = {
             "ok": False,
             "error": repr(exc),
-            "path": str((getattr(args, "sensitivity_defaults", {}) or {}).get("pressure_calibration_path") or DEFAULT_PRESSURE_CALIBRATION),
+            "path": str(sensitivity_defaults.get("pressure_calibration_path") or fallback_pressure_path),
+            "source_model": str(sensitivity_defaults.get("pressure_source_model") or DEFAULT_PRESSURE_SOURCE),
         }
     return settings
 

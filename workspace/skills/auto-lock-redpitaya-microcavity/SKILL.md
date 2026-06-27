@@ -139,7 +139,7 @@ Internally it follows this rhythm:
    - use the existing proportional centering rule, such as `pc_next = pc + 0.8 * arc_factor * dip_out2`;
    - repeat sweep/centering until `abs(dip_out2) <= 0.03 V` or a small iteration cap is reached.
 7. Recompute the PID setpoint from the fresh centered sweep using dip-rise 1/4.
-8. Turn off ASG sweep, zero PID `p`/`i`, set `pid0.setpoint`, set `pid0.ival = +1 V`, set `pid0.output_direct = out2`.
+8. Turn off ASG sweep, zero PID `p`/`i`, reset `pid0.inputfilter = 0`, set `pid0.setpoint`, set `pid0.ival = +1 V`, set `pid0.output_direct = out2`.
 9. Enable PID with `p = 0.01`, `i = -1`; with `pid0.ival = +1 V`, negative integral direction is the fixed correct direction for this setup.
 10. Increase the integral magnitude directly to `i = -100`.
 11. Do not auto-flip the integral direction during the normal current-mode workflow.
@@ -207,6 +207,14 @@ T_lock = T_min + 0.25 * (T_platform - T_min)
 ```
 
 Do not reuse the platform-drop 1/4 level as the PID setpoint.
+
+For DC transmission locking, always clear the PID input filter before handoff:
+
+```text
+pid0.inputfilter = 0
+```
+
+The lock setpoint is defined on raw `in1` transmission. A stale nonzero PyRPL `pid0.inputfilter` changes the signal that PID compares to the setpoint and can make the trace pass through the apparent raw lockpoint without stopping.
 
 `initial_ival` is a handoff starting control voltage, not a measured physical parameter. The default current-mode lock sets it to:
 

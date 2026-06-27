@@ -30,6 +30,7 @@ from lock_common import (
     analyze_apparent_width,
     bridge_get,
     configure_prelock_sweep,
+    reset_pid_input_filter,
     set_param,
     stop_bridge_acquisitions,
 )
@@ -75,14 +76,27 @@ def capture_prelock(args: argparse.Namespace, tag: str) -> dict[str, Any]:
         args.sweep_amplitude,
     )
     time.sleep(args.settle_seconds)
-    capture = bridge_get(args.base, "/scope/single", {"tag": tag, "timeout": 8, "plot": "false"})
+    capture_params: dict[str, object] = {"tag": tag, "timeout": 8, "plot": "false"}
+    if args.keep_captures:
+        capture_params["save"] = "true"
+    else:
+        capture_params.update({"save": "false", "inline": "true", "max_points": 200000})
+    capture = bridge_get(args.base, "/scope/single", capture_params)
     if not capture.get("ok"):
         raise RuntimeError(capture)
 
-    with np.load(Path(capture["path"])) as data:
-        t = np.asarray(data["t"], dtype=float)
-        ch1 = np.asarray(data["ch1"], dtype=float)
-        ch2 = np.asarray(data["ch2"], dtype=float)
+    if args.keep_captures:
+        with np.load(Path(capture["path"])) as data:
+            t = np.asarray(data["t"], dtype=float)
+            ch1 = np.asarray(data["ch1"], dtype=float)
+            ch2 = np.asarray(data["ch2"], dtype=float)
+    else:
+        trace = capture.get("trace") or {}
+        t = np.asarray(trace.get("t", []), dtype=float)
+        ch1 = np.asarray(trace.get("ch1", []), dtype=float)
+        ch2 = np.asarray(trace.get("ch2", []), dtype=float)
+        if not (t.size and t.size == ch1.size == ch2.size):
+            raise RuntimeError({"stage": "capture", "reason": "missing_inline_scope_trace", "capture": capture})
 
     if not args.keep_captures:
         remove_temp_capture(capture.get("path"), args.tag)
@@ -277,6 +291,7 @@ def pid_handoff(args: argparse.Namespace, target: float) -> tuple[float, list[di
     set_param(args.base, "asg0.output_direct", "off")
     set_param(args.base, "pid0.p", 0)
     set_param(args.base, "pid0.i", 0)
+    reset_pid_input_filter(args.base)
     set_param(args.base, "pid0.output_direct", "out2")
     set_param(args.base, "pid0.setpoint", target)
     set_param(args.base, "pid0.ival", args.initial_ival)

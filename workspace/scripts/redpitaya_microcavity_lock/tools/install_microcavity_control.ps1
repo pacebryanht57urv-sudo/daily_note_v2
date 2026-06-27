@@ -1,6 +1,7 @@
 param(
     [switch]$Reset,
     [switch]$ForceManaged,
+    [switch]$NoDownloadPython,
     [string]$InstallRoot
 )
 
@@ -11,6 +12,10 @@ $PackageDir = Split-Path -Parent $ToolsDir
 $RequirementsFile = Join-Path $PackageDir "requirements\requirements-pyrpl.txt"
 $PackageRuntimeConfig = Join-Path $PackageDir "runtime.local.json"
 $RequiredPyrplVersion = "0.9.8.0"
+$ManagedPythonVersion = "3.11.9"
+$ManagedPythonDir = $null
+$ManagedPythonExe = $null
+$ManagedPythonInstaller = $null
 
 if (-not $InstallRoot) {
     if ($env:MICROCAVITY_INSTALL_ROOT) {
@@ -24,7 +29,12 @@ if (-not $InstallRoot) {
 
 $InstallRoot = [System.IO.Path]::GetFullPath($InstallRoot)
 $EnvRoot = Join-Path $InstallRoot "envs"
-$ManagedEnv = Join-Path $EnvRoot "pyrpl-0.9.8.0-py310"
+$PythonRoot = Join-Path $InstallRoot "python"
+$DownloadRoot = Join-Path $InstallRoot "downloads"
+$ManagedPythonDir = Join-Path $PythonRoot ("python-{0}" -f $ManagedPythonVersion)
+$ManagedPythonExe = Join-Path $ManagedPythonDir "python.exe"
+$ManagedPythonInstaller = Join-Path $DownloadRoot ("python-{0}-amd64.exe" -f $ManagedPythonVersion)
+$ManagedEnv = Join-Path $EnvRoot "pyrpl-0.9.8.0-py311"
 $ManagedPython = Join-Path $ManagedEnv "Scripts\python.exe"
 $InstallRuntimeConfig = Join-Path $InstallRoot "runtime.local.json"
 
@@ -146,6 +156,61 @@ function Find-BootstrapPython {
     return $null
 }
 
+function Install-ManagedBootstrapPython {
+    if ($NoDownloadPython) {
+        return $null
+    }
+    if (Test-Path $ManagedPythonExe) {
+        $version = & $ManagedPythonExe -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"
+        if ($LASTEXITCODE -eq 0 -and $version -eq "3.11") {
+            return $ManagedPythonExe
+        }
+    }
+
+    $url = "https://www.python.org/ftp/python/$ManagedPythonVersion/python-$ManagedPythonVersion-amd64.exe"
+    Write-Step "Downloading private Python $ManagedPythonVersion"
+    Write-Host "url:    $url"
+    Write-Host "target: $ManagedPythonDir"
+    New-Item -ItemType Directory -Path $DownloadRoot -Force | Out-Null
+    New-Item -ItemType Directory -Path $PythonRoot -Force | Out-Null
+
+    if (-not (Test-Path $ManagedPythonInstaller)) {
+        try {
+            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+            Invoke-WebRequest -Uri $url -OutFile $ManagedPythonInstaller -UseBasicParsing
+        } catch {
+            throw "Failed to download Python $ManagedPythonVersion from python.org. Check network access or install Python 3.10/3.11 manually. Error: $($_.Exception.Message)"
+        }
+    } else {
+        Write-Host "Using cached installer:"
+        Write-Host "  $ManagedPythonInstaller"
+    }
+
+    Write-Step "Installing private Python $ManagedPythonVersion"
+    if (Test-Path $ManagedPythonDir) {
+        Remove-Item -LiteralPath $ManagedPythonDir -Recurse -Force
+    }
+    $args = @(
+        "/quiet",
+        "InstallAllUsers=0",
+        "TargetDir=$ManagedPythonDir",
+        "PrependPath=0",
+        "Include_launcher=0",
+        "Include_pip=1",
+        "Include_tcltk=1",
+        "Include_test=0",
+        "Shortcuts=0"
+    )
+    $process = Start-Process -FilePath $ManagedPythonInstaller -ArgumentList $args -Wait -PassThru
+    if ($process.ExitCode -ne 0) {
+        throw "Python installer failed with exit code $($process.ExitCode): $ManagedPythonInstaller"
+    }
+    if (-not (Test-Path $ManagedPythonExe)) {
+        throw "Python installer completed but python.exe was not found: $ManagedPythonExe"
+    }
+    return $ManagedPythonExe
+}
+
 function Write-RuntimeConfig([string]$PythonExe, [string]$RuntimeKind, [object]$Probe) {
     New-Item -ItemType Directory -Path $InstallRoot -Force | Out-Null
     $state = [ordered]@{
@@ -153,6 +218,7 @@ function Write-RuntimeConfig([string]$PythonExe, [string]$RuntimeKind, [object]$
         runtime_kind = $RuntimeKind
         install_root = $InstallRoot
         managed_env = $ManagedEnv
+        managed_bootstrap_python = $ManagedPythonExe
         required_pyrpl_version = $RequiredPyrplVersion
         pyrpl_version = $Probe.pyrpl_version
         package_dir = $PackageDir
@@ -166,6 +232,7 @@ function Write-RuntimeConfig([string]$PythonExe, [string]$RuntimeKind, [object]$
 Write-Step "Microcavity Control runtime installer"
 Write-Host "package:      $PackageDir"
 Write-Host "install root: $InstallRoot"
+Write-Host "private py:   $ManagedPythonExe"
 Write-Host "managed env:  $ManagedEnv"
 
 if (-not (Test-Path $RequirementsFile)) {
@@ -180,6 +247,11 @@ if ($Reset) {
         Write-Host "Removing managed env:"
         Write-Host "  $ManagedEnv"
         Remove-Item -LiteralPath $ManagedEnv -Recurse -Force
+    }
+    if (Test-Path $ManagedPythonDir) {
+        Write-Host "Removing private Python:"
+        Write-Host "  $ManagedPythonDir"
+        Remove-Item -LiteralPath $ManagedPythonDir -Recurse -Force
     }
 }
 
@@ -244,7 +316,10 @@ if (Test-Path $ManagedPython) {
 
 $bootstrap = Find-BootstrapPython
 if (-not $bootstrap) {
-    throw "No Python 3.10/3.11 found. Install Python 3.10/3.11 first, then rerun install_microcavity_control.bat."
+    $bootstrap = Install-ManagedBootstrapPython
+}
+if (-not $bootstrap) {
+    throw "No Python 3.10/3.11 found and automatic Python download is disabled. Install Python 3.10/3.11 first, or rerun without -NoDownloadPython."
 }
 
 Write-Host "bootstrap python: $bootstrap"
