@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -17,8 +18,21 @@ RESULTS_RELATIVE_DIR = (
 )
 
 
+def _read_windows_user_env(name: str) -> str | None:
+    if sys.platform != "win32":
+        return None
+    try:
+        import winreg
+
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as key:
+            value, _ = winreg.QueryValueEx(key, name)
+    except OSError:
+        return None
+    return str(value) if value else None
+
+
 def require_data_root() -> Path:
-    value = os.environ.get(DATA_ROOT_ENV)
+    value = os.environ.get(DATA_ROOT_ENV) or _read_windows_user_env(DATA_ROOT_ENV)
     if not value:
         raise RuntimeError(
             f"Set {DATA_ROOT_ENV} before saving Red Pitaya lock data; "

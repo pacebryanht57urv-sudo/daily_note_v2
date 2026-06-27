@@ -6,6 +6,7 @@ import json
 import sys
 import time
 from pathlib import Path
+from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import urlopen
 
@@ -26,8 +27,24 @@ def bridge_get(base: str, path: str, params: dict[str, object] | None = None) ->
     url = base.rstrip("/") + path
     if params:
         url += "?" + urlencode(params)
-    with urlopen(url, timeout=30) as response:
-        return json.loads(response.read().decode("utf-8"))
+    try:
+        with urlopen(url, timeout=30) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        try:
+            parsed = json.loads(body)
+        except json.JSONDecodeError:
+            parsed = None
+        raise RuntimeError(
+            {
+                "url": url,
+                "status": exc.code,
+                "reason": exc.reason,
+                "body": body,
+                "json": parsed,
+            }
+        ) from exc
 
 
 def set_param(base: str, param: str, value: object) -> object:
@@ -35,6 +52,24 @@ def set_param(base: str, param: str, value: object) -> object:
     if not result.get("ok"):
         raise RuntimeError(result)
     return result.get("after")
+
+
+def reset_pid_input_filter(base: str) -> object:
+    """Use raw in1 for DC transmission locking."""
+    result = bridge_get(base, "/get", {"param": "pid0.inputfilter"})
+    if result.get("ok"):
+        value = result.get("value")
+        try:
+            values = list(value)
+            if values and all(abs(float(v)) < 1e-12 for v in values):
+                return value
+        except (TypeError, ValueError):
+            try:
+                if abs(float(value)) < 1e-12:
+                    return value
+            except (TypeError, ValueError):
+                pass
+    return set_param(base, "pid0.inputfilter", 0)
 
 
 def stop_bridge_acquisitions(base: str) -> None:

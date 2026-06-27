@@ -188,7 +188,14 @@ if (-not (Test-Path -LiteralPath $ConfigFile)) {
 }
 
 if (-not $env:DAILY_NOTE_DATA_ROOT) {
-    Write-Host "DAILY_NOTE_DATA_ROOT is not set. Scope captures that save files need the external data root."
+    $dataRoot = [Environment]::GetEnvironmentVariable("DAILY_NOTE_DATA_ROOT", "User")
+    if (-not $dataRoot) {
+        $dataRoot = Join-Path $env:USERPROFILE "daily_note_data"
+    }
+    New-Item -ItemType Directory -Path $dataRoot -Force | Out-Null
+    $env:DAILY_NOTE_DATA_ROOT = $dataRoot
+    Write-Host "Using DAILY_NOTE_DATA_ROOT:"
+    Write-Host "  $env:DAILY_NOTE_DATA_ROOT"
 }
 
 Ensure-PyrplConfig $PythonExe

@@ -48,6 +48,7 @@ SAFE_PARAMS = {
     "scope.ch1_power_response_v_per_w",
     "scope.ch2_power_response_v_per_w",
     "scope.scope_power_avg_frames",
+    "pid0.inputfilter",
     "networkanalyzer.dbm_display_enabled",
     "networkanalyzer.dbm_load_ohm",
     "networkanalyzer.dbm_highz_correction_db",
@@ -1202,8 +1203,9 @@ class Bridge:
         ch2 = np.asarray(curve[1], dtype=float)
         times = np.asarray(scope.times, dtype=float)
         safe_tag = "".join(c if c.isalnum() or c in "-_" else "_" for c in tag)
-        path = RESULTS_DIR / f"{safe_tag}.npz"
+        path = None
         if save:
+            path = RESULTS_DIR / f"{safe_tag}.npz"
             RESULTS_DIR.mkdir(parents=True, exist_ok=True)
             np.savez(
                 path,
@@ -1216,8 +1218,9 @@ class Bridge:
                 trigger_source=str(scope.trigger_source),
             )
         analysis = analyze_scope_trace(times, ch1, ch2, str(scope.input1), str(scope.input2))
-        plot_path = RESULTS_DIR / f"{safe_tag}_lockpoint.png"
+        plot_path = None
         if make_plot and save:
+            plot_path = RESULTS_DIR / f"{safe_tag}_lockpoint.png"
             plot_result = make_lockpoint_plot(
                 times=times,
                 ch1=ch1,
